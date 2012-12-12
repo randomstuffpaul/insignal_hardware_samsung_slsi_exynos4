@@ -20,13 +20,17 @@ common_exynos4_dirs := \
 	libhdmi \
 	libfimc \
 	libhwcomposer \
-	libcamera \
 	libhwconverter \
 	libswconverter \
 	libswscaler \
 	libcsc \
 	libstagefrighthw \
 	libcodec
+
+ifneq (,$(findstring smdk,$(PRODUCT_BOARD)))
+common_exynos4_dirs += \
+	libcamera
+endif
 
 exynos4210_dirs := \
 	$(common_exynos4_dirs) \
