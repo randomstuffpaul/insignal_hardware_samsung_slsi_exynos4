@@ -6,7 +6,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/hw
 
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/../include \
-		    $(TOP)/device/samsung/smdk4412/include
+		    $(TOP)/device/samsung/$(TARGET_DEVICE)/include
 
 LOCAL_SRC_FILES:= \
 	SecCamera.cpp SecCameraHWInterface.cpp

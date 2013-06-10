@@ -30,7 +30,7 @@ LOCAL_C_INCLUDES += $(TOP)/device/samsung/exynos4/include
 endif
 
 ifeq ($(filter-out exynos4412,$(TARGET_BOARD_PLATFORM)),)
-LOCAL_C_INCLUDES += $(TOP)/device/samsung/smdk4412/include
+LOCAL_C_INCLUDES += $(TOP)/device/samsung/$(TARGET_DEVICE)/include
 endif
 
 ifeq ($(BOARD_USE_CSC_FIMC), true)

@@ -16,7 +16,7 @@ LOCAL_SRC_FILES := \
 
 LOCAL_C_INCLUDES := \
 	$(LOCAL_PATH)/include \
-	device/samsung/smdk4412/include
+	device/samsung/$(TARGET_DEVICE)/include
 
 LOCAL_MODULE := libsecmfcapi
 

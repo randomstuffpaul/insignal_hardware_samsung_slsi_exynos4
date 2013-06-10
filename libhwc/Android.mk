@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ifneq ($(filter smdk4412 full_smdk4412,$(TARGET_DEVICE)),)
+ifeq ($(TARGET_BOARD_PLATFORM), exynos4412)
 
 LOCAL_PATH:= $(call my-dir)
 # HAL module implemenation, not prelinked and stored in

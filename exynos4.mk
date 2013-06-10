@@ -16,9 +16,9 @@
 
 # hw composer HAL
 PRODUCT_PACKAGES += \
-	hwcomposer.smdk4412 \
+	hwcomposer.$(TARGET_DEVICE) \
         libstagefrighthw \
-        camera.smdk4412
+        camera.$(TARGET_DEVICE)
 
 # These are the OpenMAX IL modules
 PRODUCT_PACKAGES += \
