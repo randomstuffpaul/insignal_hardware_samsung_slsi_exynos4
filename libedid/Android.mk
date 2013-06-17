@@ -33,6 +33,10 @@ ifeq ($(BOARD_HDMI_DDC_CH), DDC_CH_I2C_2)
 LOCAL_CFLAGS  += -DDDC_CH_I2C_2
 endif
 
+ifeq ($(BOARD_HDMI_DDC_CH), DDC_CH_I2C_6)
+LOCAL_CFLAGS  += -DDDC_CH_I2C_6
+endif
+
 LOCAL_SRC_FILES := libddc.c libedid.c
 
 LOCAL_C_INCLUDES := \
