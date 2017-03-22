@@ -42,17 +42,14 @@
 #include "SEC_OMX_Wmvdec.h"
 #include "SsbSipMfcApi.h"
 #include "SEC_OSAL_Event.h"
-#include "color_space_convertor.h"
 
 #ifdef USE_ANB
 #include "SEC_OSAL_Android.h"
 #endif
 
-/* To use CSC FIMC in SEC OMX, gralloc should allocate physical memory using FIMC */
+/* To use CSC_METHOD_PREFER_HW or CSC_METHOD_HW in SEC OMX, gralloc should allocate physical memory using FIMC */
 /* It means GRALLOC_USAGE_HW_FIMC1 should be set on Native Window usage */
-#ifdef USE_CSC_FIMC
-#include "csc_fimc.h"
-#endif
+#include "csc.h"
 
 #undef  SEC_LOG_TAG
 #define SEC_LOG_TAG    "SEC_WMV_DEC"
@@ -786,7 +783,13 @@ OMX_ERRORTYPE SEC_MFC_DecodeThread(OMX_HANDLETYPE hComponent)
         SEC_OSAL_SemaphoreWait(pVideoDec->NBDecThread.hDecFrameStart);
 
         if (pVideoDec->NBDecThread.bExitDecodeThread == OMX_FALSE) {
+#ifdef CONFIG_MFC_FPS
+            SEC_OSAL_PerfStart(PERF_ID_DEC);
+#endif
             pWmvDec->hMFCWmvHandle.returnCodec = SsbSipMfcDecExe(pWmvDec->hMFCWmvHandle.hMFCHandle, pVideoDec->NBDecThread.oneFrameSize);
+#ifdef CONFIG_MFC_FPS
+            SEC_OSAL_PerfStop(PERF_ID_DEC);
+#endif
             SEC_OSAL_SemaphorePost(pVideoDec->NBDecThread.hDecFrameEnd);
         }
     }
@@ -809,8 +812,14 @@ OMX_ERRORTYPE SEC_MFC_WmvDec_Init(OMX_COMPONENTTYPE *pOMXComponent)
     OMX_HANDLETYPE         hMFCHandle = NULL;
     OMX_PTR                pStreamBuffer = NULL;
     OMX_PTR                pStreamPhyBuffer = NULL;
+    CSC_METHOD csc_method = CSC_METHOD_SW;
 
     FunctionIn();
+
+#ifdef CONFIG_MFC_FPS
+    SEC_OSAL_PerfInit(PERF_ID_DEC);
+    SEC_OSAL_PerfInit(PERF_ID_CSC);
+#endif
 
     pWmvDec = (SEC_WMV_HANDLE *)((SEC_OMX_VIDEODEC_COMPONENT *)pSECComponent->hComponentHandle)->hCodecHandle;
     pWmvDec->hMFCWmvHandle.bConfiguredMFC = OMX_FALSE;
@@ -882,9 +891,15 @@ OMX_ERRORTYPE SEC_MFC_WmvDec_Init(OMX_COMPONENTTYPE *pOMXComponent)
     pWmvDec->hMFCWmvHandle.outputIndexTimestamp = 0;
     pSECComponent->getAllDelayBuffer = OMX_FALSE;
 
-#ifdef USE_CSC_FIMC
-    pWmvDec->hFIMCHandle = csc_fimc_open();
+#ifdef USE_ANB
+#if defined(USE_CSC_FIMC) || defined(USE_CSC_GSCALER)
+    if (pSECOutputPort->bIsANBEnabled == OMX_TRUE) {
+        csc_method = CSC_METHOD_PREFER_HW;
+    }
 #endif
+#endif
+    pVideoDec->csc_handle = csc_init(&csc_method);
+    pVideoDec->csc_set_format = OMX_FALSE;
 
 EXIT:
     FunctionOut();
@@ -902,6 +917,11 @@ OMX_ERRORTYPE SEC_MFC_WmvDec_Terminate(OMX_COMPONENTTYPE *pOMXComponent)
     OMX_HANDLETYPE         hMFCHandle = NULL;
 
     FunctionIn();
+
+#ifdef CONFIG_MFC_FPS
+    SEC_OSAL_PerfPrint("[DEC]",  PERF_ID_DEC);
+    SEC_OSAL_PerfPrint("[CSC]",  PERF_ID_CSC);
+#endif
 
     pWmvDec = (SEC_WMV_HANDLE *)((SEC_OMX_VIDEODEC_COMPONENT *)pSECComponent->hComponentHandle)->hCodecHandle;
     hMFCHandle = pWmvDec->hMFCWmvHandle.hMFCHandle;
@@ -935,12 +955,10 @@ OMX_ERRORTYPE SEC_MFC_WmvDec_Terminate(OMX_COMPONENTTYPE *pOMXComponent)
         pWmvDec->hMFCWmvHandle.hMFCHandle = NULL;
     }
 
-#ifdef USE_CSC_FIMC
-    if (pWmvDec->hFIMCHandle != NULL) {
-        csc_fimc_close(pWmvDec->hFIMCHandle);
-        pWmvDec->hFIMCHandle = NULL;
+    if (pVideoDec->csc_handle != NULL) {
+        csc_deinit(pVideoDec->csc_handle);
+        pVideoDec->csc_handle = NULL;
     }
-#endif
 
 EXIT:
     FunctionOut();
@@ -1266,12 +1284,19 @@ OMX_ERRORTYPE SEC_MFC_Wmv_Decode_Nonblock(OMX_COMPONENTTYPE *pOMXComponent, SEC_
         SEC_OMX_BASEPORT *pSECInputPort = &pSECComponent->pSECPort[INPUT_PORT_INDEX];
         SEC_OMX_BASEPORT *pSECOutputPort = &pSECComponent->pSECPort[OUTPUT_PORT_INDEX];
         void *pOutputBuf = (void *)pOutputData->dataBuffer;
-        void *pYUVBuf[3];
+        void *pSrcBuf[3] = {NULL, };
+        void *pYUVBuf[3] = {NULL, };
+        unsigned int csc_src_color_format, csc_dst_color_format;
+        CSC_METHOD csc_method = CSC_METHOD_SW;
+        unsigned int cacheable = 1;
 
         int frameSize = bufWidth * bufHeight;
         int width = outputInfo.img_width;
         int height = outputInfo.img_height;
         int imageSize = outputInfo.img_width * outputInfo.img_height;
+
+        pSrcBuf[0] = outputInfo.YVirAddr;
+        pSrcBuf[1] = outputInfo.CVirAddr;
 
         pYUVBuf[0]  = (unsigned char *)pOutputBuf;
         pYUVBuf[1]  = (unsigned char *)pOutputBuf + imageSize;
@@ -1289,71 +1314,80 @@ OMX_ERRORTYPE SEC_MFC_Wmv_Decode_Nonblock(OMX_COMPONENTTYPE *pOMXComponent, SEC_
         if ((pVideoDec->bThumbnailMode == OMX_FALSE) &&
             (pSECOutputPort->portDefinition.format.video.eColorFormat == OMX_SEC_COLOR_FormatNV12TPhysicalAddress)) {
             /* if use Post copy address structure */
-            SEC_OSAL_Memcpy(pOutputBuf, &(outputInfo.YPhyAddr), sizeof(outputInfo.YPhyAddr));
-            SEC_OSAL_Memcpy((unsigned char *)pOutputBuf + (sizeof(void *) * 1), &(outputInfo.CPhyAddr), sizeof(outputInfo.CPhyAddr));
-            SEC_OSAL_Memcpy((unsigned char *)pOutputBuf + (sizeof(void *) * 2), &(outputInfo.YVirAddr), sizeof(outputInfo.YVirAddr));
-            SEC_OSAL_Memcpy((unsigned char *)pOutputBuf + (sizeof(void *) * 3), &(outputInfo.CVirAddr), sizeof(outputInfo.CVirAddr));
+            SEC_OSAL_Memcpy(pYUVBuf[0], &(outputInfo.YPhyAddr), sizeof(outputInfo.YPhyAddr));
+            SEC_OSAL_Memcpy((unsigned char *)pYUVBuf[0] + (sizeof(void *) * 1), &(outputInfo.CPhyAddr), sizeof(outputInfo.CPhyAddr));
+            SEC_OSAL_Memcpy((unsigned char *)pYUVBuf[0] + (sizeof(void *) * 2), &(outputInfo.YVirAddr), sizeof(outputInfo.YVirAddr));
+            SEC_OSAL_Memcpy((unsigned char *)pYUVBuf[0] + (sizeof(void *) * 3), &(outputInfo.CVirAddr), sizeof(outputInfo.CVirAddr));
             pOutputData->dataLen = (outputInfo.img_width * outputInfo.img_height * 3) / 2;
         } else {
             SEC_OSAL_Log(SEC_LOG_TRACE, "YUV420 out for ThumbnailMode");
+#ifdef CONFIG_MFC_FPS
+            SEC_OSAL_PerfStart(PERF_ID_CSC);
+#endif
             switch (pSECComponent->pSECPort[OUTPUT_PORT_INDEX].portDefinition.format.video.eColorFormat) {
             case OMX_SEC_COLOR_FormatNV12Tiled:
-                SEC_OSAL_Memcpy(pOutputBuf, outputInfo.YVirAddr, FrameBufferYSize);
-                SEC_OSAL_Memcpy((unsigned char *)pOutputBuf + FrameBufferYSize, outputInfo.CVirAddr, FrameBufferUVSize);
+                csc_src_color_format = omx_2_hal_pixel_format((unsigned int)OMX_SEC_COLOR_FormatNV12Tiled);
+                csc_dst_color_format = omx_2_hal_pixel_format((unsigned int)OMX_SEC_COLOR_FormatNV12Tiled);
                 pOutputData->dataLen = FrameBufferYSize + FrameBufferUVSize;
                 break;
             case OMX_COLOR_FormatYUV420SemiPlanar:
             case OMX_SEC_COLOR_FormatANBYUV420SemiPlanar:
-#ifdef USE_CSC_FIMC
-                if ((pSECOutputPort->bIsANBEnabled == OMX_TRUE) && (pWmvDec->hFIMCHandle != NULL)) {
-                    void *pPhys[3];
-                    SEC_OSAL_GetPhysANB(pOutputData->dataBuffer, pPhys);
-                    pYUVBuf[0] = outputInfo.YPhyAddr;
-                    pYUVBuf[1] = outputInfo.CPhyAddr;
-                    csc_fimc_convert_nv12t(pWmvDec->hFIMCHandle, pPhys,
-                                        pYUVBuf, width, height,
-                                        OMX_SEC_COLOR_FormatANBYUV420SemiPlanar);
-                    break;
-                }
-#endif
-                csc_tiled_to_linear_y_neon(
-                    (unsigned char *)pYUVBuf[0],
-                    (unsigned char *)outputInfo.YVirAddr,
-                    width,
-                    height);
-                csc_tiled_to_linear_uv_neon(
-                    (unsigned char *)pYUVBuf[1],
-                    (unsigned char *)outputInfo.CVirAddr,
-                    width,
-                    height / 2);
+                csc_src_color_format = omx_2_hal_pixel_format((unsigned int)OMX_SEC_COLOR_FormatNV12Tiled);
+                csc_dst_color_format = omx_2_hal_pixel_format((unsigned int)OMX_COLOR_FormatYUV420SemiPlanar);
                 break;
             case OMX_COLOR_FormatYUV420Planar:
             default:
-#ifdef USE_CSC_FIMC
-                if ((pSECOutputPort->bIsANBEnabled == OMX_TRUE) && (pWmvDec->hFIMCHandle != NULL)) {
-                    void *pPhys[3];
-                    SEC_OSAL_GetPhysANB(pOutputData->dataBuffer, pPhys);
-                    pYUVBuf[0] = outputInfo.YPhyAddr;
-                    pYUVBuf[1] = outputInfo.CPhyAddr;
-                    csc_fimc_convert_nv12t(pWmvDec->hFIMCHandle, pPhys,
-                                        pYUVBuf, width, height,
-                                        OMX_COLOR_FormatYUV420Planar);
-                    break;
-                }
-#endif
-                csc_tiled_to_linear_y_neon(
-                    (unsigned char *)pYUVBuf[0],
-                    (unsigned char *)outputInfo.YVirAddr,
-                    width,
-                    height);
-                csc_tiled_to_linear_uv_deinterleave_neon(
-                    (unsigned char *)pYUVBuf[1],
-                    (unsigned char *)pYUVBuf[2],
-                    (unsigned char *)outputInfo.CVirAddr,
-                    width,
-                    height / 2);
+                csc_src_color_format = omx_2_hal_pixel_format((unsigned int)OMX_SEC_COLOR_FormatNV12Tiled);
+                csc_dst_color_format = omx_2_hal_pixel_format((unsigned int)OMX_COLOR_FormatYUV420Planar);
                 break;
             }
+
+            csc_get_method(pVideoDec->csc_handle, &csc_method);
+            if ((pSECOutputPort->bIsANBEnabled == OMX_TRUE) && (csc_method == CSC_METHOD_HW)) {
+                SEC_OSAL_GetPhysANB(pOutputData->dataBuffer, pYUVBuf);
+                pSrcBuf[0] = outputInfo.YPhyAddr;
+                pSrcBuf[1] = outputInfo.CPhyAddr;
+            }
+            if (pVideoDec->csc_set_format == OMX_FALSE) {
+                csc_set_src_format(
+                    pVideoDec->csc_handle,  /* handle */
+                    width,                  /* width */
+                    height,                 /* height */
+                    0,                      /* crop_left */
+                    0,                      /* crop_right */
+                    width,                  /* crop_width */
+                    height,                 /* crop_height */
+                    csc_src_color_format,   /* color_format */
+                    cacheable);             /* cacheable */
+                csc_set_dst_format(
+                    pVideoDec->csc_handle,  /* handle */
+                    width,                  /* width */
+                    height,                 /* height */
+                    0,                      /* crop_left */
+                    0,                      /* crop_right */
+                    width,                  /* crop_width */
+                    height,                 /* crop_height */
+                    csc_dst_color_format,   /* color_format */
+                    cacheable);             /* cacheable */
+                pVideoDec->csc_set_format = OMX_TRUE;
+            }
+            csc_set_src_buffer(
+                pVideoDec->csc_handle,  /* handle */
+                pSrcBuf[0],             /* y addr */
+                pSrcBuf[1],             /* u addr or uv addr */
+                pSrcBuf[2],             /* v addr or none */
+                0);                     /* ion fd */
+            csc_set_dst_buffer(
+                pVideoDec->csc_handle,
+                pYUVBuf[0],             /* y addr */
+                pYUVBuf[1],             /* u addr or uv addr */
+                pYUVBuf[2],             /* v addr or none */
+                0);                     /* ion fd */
+            csc_convert(pVideoDec->csc_handle);
+
+#ifdef CONFIG_MFC_FPS
+            SEC_OSAL_PerfStop(PERF_ID_CSC);
+#endif
         }
 #ifdef USE_ANB
         if (pSECOutputPort->bIsANBEnabled == OMX_TRUE) {
@@ -1575,12 +1609,19 @@ OMX_ERRORTYPE SEC_MFC_Wmv_Decode_Block(OMX_COMPONENTTYPE *pOMXComponent, SEC_OMX
             (status == MFC_GETOUTBUF_DISPLAY_ONLY)) {
             /** Fill Output Buffer **/
             void *pOutputBuf = (void *)pOutputData->dataBuffer;
-            void *pYUVBuf[3];
+            void *pSrcBuf[3] = {NULL, };
+            void *pYUVBuf[3] = {NULL, };
+            unsigned int csc_src_color_format, csc_dst_color_format;
+            CSC_METHOD csc_method = CSC_METHOD_SW;
+            unsigned int cacheable = 1;
 
             int frameSize = bufWidth * bufHeight;
             int width = outputInfo.img_width;
             int height = outputInfo.img_height;
             int imageSize = outputInfo.img_width * outputInfo.img_height;
+
+            pSrcBuf[0] = outputInfo.YVirAddr;
+            pSrcBuf[1] = outputInfo.CVirAddr;
 
             pYUVBuf[0]  = (unsigned char *)pOutputBuf;
             pYUVBuf[1]  = (unsigned char *)pOutputBuf + imageSize;
@@ -1597,71 +1638,80 @@ OMX_ERRORTYPE SEC_MFC_Wmv_Decode_Block(OMX_COMPONENTTYPE *pOMXComponent, SEC_OMX
 #endif
             if ((pVideoDec->bThumbnailMode == OMX_FALSE) &&
                 (pSECOutputPort->portDefinition.format.video.eColorFormat == OMX_SEC_COLOR_FormatNV12TPhysicalAddress)) {
-                SEC_OSAL_Memcpy(pOutputBuf, &(outputInfo.YPhyAddr), sizeof(outputInfo.YPhyAddr));
-                SEC_OSAL_Memcpy((unsigned char *)pOutputBuf + (sizeof(void *) * 1), &(outputInfo.CPhyAddr), sizeof(outputInfo.CPhyAddr));
-                SEC_OSAL_Memcpy((unsigned char *)pOutputBuf + (sizeof(void *) * 2), &(outputInfo.YVirAddr), sizeof(outputInfo.YVirAddr));
-                SEC_OSAL_Memcpy((unsigned char *)pOutputBuf + (sizeof(void *) * 3), &(outputInfo.CVirAddr), sizeof(outputInfo.CVirAddr));
+                SEC_OSAL_Memcpy(pYUVBuf[0], &(outputInfo.YPhyAddr), sizeof(outputInfo.YPhyAddr));
+                SEC_OSAL_Memcpy((unsigned char *)pYUVBuf[0] + (sizeof(void *) * 1), &(outputInfo.CPhyAddr), sizeof(outputInfo.CPhyAddr));
+                SEC_OSAL_Memcpy((unsigned char *)pYUVBuf[0] + (sizeof(void *) * 2), &(outputInfo.YVirAddr), sizeof(outputInfo.YVirAddr));
+                SEC_OSAL_Memcpy((unsigned char *)pYUVBuf[0] + (sizeof(void *) * 3), &(outputInfo.CVirAddr), sizeof(outputInfo.CVirAddr));
                 pOutputData->dataLen = (outputInfo.img_width * outputInfo.img_height * 3) / 2;
             } else {
                 SEC_OSAL_Log(SEC_LOG_TRACE, "YUV420 out for ThumbnailMode");
+#ifdef CONFIG_MFC_FPS
+                SEC_OSAL_PerfStart(PERF_ID_CSC);
+#endif
                 switch (pSECComponent->pSECPort[OUTPUT_PORT_INDEX].portDefinition.format.video.eColorFormat) {
                 case OMX_SEC_COLOR_FormatNV12Tiled:
-                    SEC_OSAL_Memcpy(pOutputBuf, outputInfo.YVirAddr, FrameBufferYSize);
-                    SEC_OSAL_Memcpy((unsigned char *)pOutputBuf + FrameBufferYSize, outputInfo.CVirAddr, FrameBufferUVSize);
+                    csc_src_color_format = omx_2_hal_pixel_format((unsigned int)OMX_SEC_COLOR_FormatNV12Tiled);
+                    csc_dst_color_format = omx_2_hal_pixel_format((unsigned int)OMX_SEC_COLOR_FormatNV12Tiled);
                     pOutputData->dataLen = FrameBufferYSize + FrameBufferUVSize;
                     break;
                 case OMX_COLOR_FormatYUV420SemiPlanar:
                 case OMX_SEC_COLOR_FormatANBYUV420SemiPlanar:
-#ifdef USE_CSC_FIMC
-                    if ((pSECOutputPort->bIsANBEnabled == OMX_TRUE) && (pWmvDec->hFIMCHandle != NULL)) {
-                        void *pPhys[3];
-                        SEC_OSAL_GetPhysANB(pOutputData->dataBuffer, pPhys);
-                        pYUVBuf[0] = outputInfo.YPhyAddr;
-                        pYUVBuf[1] = outputInfo.CPhyAddr;
-                        csc_fimc_convert_nv12t(pWmvDec->hFIMCHandle, pPhys,
-                                            pYUVBuf, width, height,
-                                            OMX_SEC_COLOR_FormatANBYUV420SemiPlanar);
-                        break;
-                    }
-#endif
-                    csc_tiled_to_linear_y_neon(
-                        (unsigned char *)pYUVBuf[0],
-                        (unsigned char *)outputInfo.YVirAddr,
-                        width,
-                        height);
-                    csc_tiled_to_linear_uv_neon(
-                        (unsigned char *)pYUVBuf[1],
-                        (unsigned char *)outputInfo.CVirAddr,
-                        width,
-                        height / 2);
+                    csc_src_color_format = omx_2_hal_pixel_format((unsigned int)OMX_SEC_COLOR_FormatNV12Tiled);
+                    csc_dst_color_format = omx_2_hal_pixel_format((unsigned int)OMX_COLOR_FormatYUV420SemiPlanar);
                     break;
                 case OMX_COLOR_FormatYUV420Planar:
                 default:
-#ifdef USE_CSC_FIMC
-                    if ((pSECOutputPort->bIsANBEnabled == OMX_TRUE) && (pWmvDec->hFIMCHandle != NULL)) {
-                        void *pPhys[3];
-                        SEC_OSAL_GetPhysANB(pOutputData->dataBuffer, pPhys);
-                        pYUVBuf[0] = outputInfo.YPhyAddr;
-                        pYUVBuf[1] = outputInfo.CPhyAddr;
-                        csc_fimc_convert_nv12t(pWmvDec->hFIMCHandle, pPhys,
-                                            pYUVBuf, width, height,
-                                            OMX_COLOR_FormatYUV420Planar);
-                        break;
-                    }
-#endif
-                    csc_tiled_to_linear_y_neon(
-                        (unsigned char *)pYUVBuf[0],
-                        (unsigned char *)outputInfo.YVirAddr,
-                        width,
-                        height);
-                    csc_tiled_to_linear_uv_deinterleave_neon(
-                        (unsigned char *)pYUVBuf[1],
-                        (unsigned char *)pYUVBuf[2],
-                        (unsigned char *)outputInfo.CVirAddr,
-                        width,
-                        height / 2);
+                    csc_src_color_format = omx_2_hal_pixel_format((unsigned int)OMX_SEC_COLOR_FormatNV12Tiled);
+                    csc_dst_color_format = omx_2_hal_pixel_format((unsigned int)OMX_COLOR_FormatYUV420Planar);
                     break;
                 }
+
+                csc_get_method(pVideoDec->csc_handle, &csc_method);
+                if ((pSECOutputPort->bIsANBEnabled == OMX_TRUE) && (csc_method == CSC_METHOD_HW)) {
+                    SEC_OSAL_GetPhysANB(pOutputData->dataBuffer, pYUVBuf);
+                    pSrcBuf[0] = outputInfo.YPhyAddr;
+                    pSrcBuf[1] = outputInfo.CPhyAddr;
+                }
+                if (pVideoDec->csc_set_format == OMX_FALSE) {
+                    csc_set_src_format(
+                        pVideoDec->csc_handle,  /* handle */
+                        width,                  /* width */
+                        height,                 /* height */
+                        0,                      /* crop_left */
+                        0,                      /* crop_right */
+                        width,                  /* crop_width */
+                        height,                 /* crop_height */
+                        csc_src_color_format,   /* color_format */
+                        cacheable);             /* cacheable */
+                    csc_set_dst_format(
+                        pVideoDec->csc_handle,  /* handle */
+                        width,                  /* width */
+                        height,                 /* height */
+                        0,                      /* crop_left */
+                        0,                      /* crop_right */
+                        width,                  /* crop_width */
+                        height,                 /* crop_height */
+                        csc_dst_color_format,   /* color_format */
+                        cacheable);             /* cacheable */
+                    pVideoDec->csc_set_format = OMX_TRUE;
+                }
+                csc_set_src_buffer(
+                    pVideoDec->csc_handle,  /* handle */
+                    pSrcBuf[0],             /* y addr */
+                    pSrcBuf[1],             /* u addr or uv addr */
+                    pSrcBuf[2],             /* v addr or none */
+                    0);                     /* ion fd */
+                csc_set_dst_buffer(
+                    pVideoDec->csc_handle,
+                    pYUVBuf[0],             /* y addr */
+                    pYUVBuf[1],             /* u addr or uv addr */
+                    pYUVBuf[2],             /* v addr or none */
+                    0);                     /* ion fd */
+                csc_convert(pVideoDec->csc_handle);
+
+#ifdef CONFIG_MFC_FPS
+                SEC_OSAL_PerfStop(PERF_ID_CSC);
+#endif
             }
 
 #ifdef USE_ANB

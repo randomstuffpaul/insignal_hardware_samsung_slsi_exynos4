@@ -13,6 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+//#define LOG_NDEBUG 0
+//#include <utils/Log.h>
+
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -20,6 +23,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -29,6 +33,7 @@
 #include <s3c-fb.h>
 
 #include <EGL/egl.h>
+#include "SecHWCUtils.h"
 
 #define HWC_REMOVE_DEPRECATED_VERSIONS 1
 
@@ -44,115 +49,36 @@
 
 #include <sync/sync.h>
 
-#include "libedid.h"
+//#include "ion.h"
 #include "gralloc_priv.h"
-#include "exynos_fimc.h"
-#include "exynos_format.h"
-#include "exynos_v4l2.h"
+//#include "exynos_fimc.h"
+//#include "exynos_format.h"
+//#include "exynos_v4l2.h"
 #include "s5p_tvout_v4l2.h"
 
-#define GRALLOC_ALIGN( value, base ) (((value) + ((base) - 1)) & ~((base) - 1))
-#define USE_MIXER_VP 1
-#define HDMI_DEFAULT_PRESET_ID V4L2_DV_480P59_94
+#if defined(BOARD_USES_HDMI)
+#include "SecHdmiClient.h"
+#include "SecTVOutService.h"
 
-const size_t NUM_HW_WINDOWS = 5;
-const size_t NO_FB_NEEDED = NUM_HW_WINDOWS + 1;
-const size_t MAX_PIXELS = 480 * 800 * 2;
-const size_t FIMC_W_ALIGNMENT = 16;
-const size_t FIMC_H_ALIGNMENT = 16;
-const size_t FIMC_DST_CROP_W_ALIGNMENT_RGB888 = 32;
-const size_t FIMC_DST_W_ALIGNMENT_RGB888 = 32;
-const size_t FIMC_DST_H_ALIGNMENT_RGB888 = 1;
-const size_t FIMD_FIMC_IDX = 0;
-const size_t HDMI_FIMC_IDX = 1;
-const int AVAILABLE_FIMC_UNITS[] = { 2, 3 };
-const size_t NUM_FIMC_UNITS = sizeof(AVAILABLE_FIMC_UNITS) /
-        sizeof(AVAILABLE_FIMC_UNITS[0]);
-const size_t BURSTLEN_BYTES = 16 * 8;
-const size_t NUM_HDMI_BUFFERS = 4;
+#include "SecHdmi.h"
 
-struct exynos4_hwc_composer_device_1_t;
+//#define CHECK_EGL_FPS
+#ifdef CHECK_EGL_FPS
+extern void check_fps();
+#endif
 
-struct exynos4_fimc_map_t {
-    enum {
-        FIMC_NONE = 0,
-        FIMC_M2M,
-        // TODO: FIMC_LOCAL_PATH
-    } mode;
-    int idx;
-};
+static int lcd_width, lcd_height;
+static int prev_usage = 0;
 
-struct exynos4_hwc_post_data_t {
-    int                 overlay_map[NUM_HW_WINDOWS];
-    exynos4_fimc_map_t   fimc_map[NUM_HW_WINDOWS];
-    size_t              fb_window;
-};
+#define CHECK_TIME_DEBUG 0
+#define SUPPORT_AUTO_UI_ROTATE
+#endif
 
-const size_t NUM_FIMC_DST_BUFS = 3;
-struct exynos4_fimc_data_t {
-    void            *fimc;
-    exynos_fimc_img  src_cfg;
-    exynos_fimc_img  dst_cfg;
-    buffer_handle_t dst_buf[NUM_FIMC_DST_BUFS];
-    int             dst_buf_fence[NUM_FIMC_DST_BUFS];
-    size_t          current_buf;
-};
-
-struct hdmi_layer_t {
-    int     id;
-    int     fd;
-    bool    enabled;
-    exynos_fimc_img  cfg;
-
-    bool    streaming;
-    size_t  current_buf;
-    size_t  queued_buf;
-};
-
-struct exynos4_hwc_composer_device_1_t {
-    hwc_composer_device_1_t base;
-
-    int                     fd;
-    int                     vsync_fd;
-    exynos4_hwc_post_data_t bufs;
-
-    const private_module_t  *gralloc_module;
-    alloc_device_t          *alloc_device;
-    const hwc_procs_t       *procs;
-    pthread_t               vsync_thread;
-    int                     force_gpu;
-
-    int32_t                 xres;
-    int32_t                 yres;
-    int32_t                 xdpi;
-    int32_t                 ydpi;
-    int32_t                 vsync_period;
-
-    bool hdmi_hpd;
-    bool hdmi_enabled;
-    bool hdmi_blanked;
-    int  edid_enabled;
-    int hdmi_configured;
-    int  hdmi_w;
-    int  hdmi_h;
-
-    hdmi_layer_t            hdmi_layers[2];
-
-    exynos4_fimc_data_t      fimc[NUM_FIMC_UNITS];
-
-    struct s3c_fb_win_config last_config[NUM_HW_WINDOWS];
-    size_t                  last_fb_window;
-    const void              *last_handles[NUM_HW_WINDOWS];
-    exynos4_fimc_map_t       last_fimc_map[NUM_HW_WINDOWS];
-};
-
-static void exynos4_cleanup_fimc_m2m(exynos4_hwc_composer_device_1_t *pdev,
-        size_t fimc_idx);
 
 static void dump_handle(private_handle_t *h)
 {
-    ALOGV("\t\tformat = %d, width = %u, height = %u, stride = %u, vstride = %u",
-            h->format, h->width, h->height, h->stride, h->stride);
+    ALOGV("\t\tfd = %d, base = 0x%x, format = %d, width = %u, height = %u, stride = %u, vstride = %u",
+            h->fd, h->base, h->format, h->width, h->height, h->stride, h->stride);
 }
 
 static void dump_layer(hwc_layer_1_t const *l)
@@ -190,121 +116,71 @@ static void dump_config(s3c_fb_win_config &c)
     }
 }
 
-static void dump_fimc_img(exynos_fimc_img &c)
-{
-    ALOGV("\tx = %u, y = %u, w = %u, h = %u, fw = %u, fh = %u",
-            c.x, c.y, c.w, c.h, c.fw, c.fh);
-    ALOGV("\taddr = {%u, %u, %u}, rot = %u, cacheable = %u, drmMode = %u",
-            c.yaddr, c.uaddr, c.vaddr, c.rot, c.cacheable, c.drmMode);
-}
-
 inline int WIDTH(const hwc_rect &rect) { return rect.right - rect.left; }
 inline int HEIGHT(const hwc_rect &rect) { return rect.bottom - rect.top; }
-template<typename T> inline T max(T a, T b) { return (a > b) ? a : b; }
-template<typename T> inline T min(T a, T b) { return (a < b) ? a : b; }
 
-template<typename T> void align_crop_and_center(T &w, T &h,
-        hwc_rect_t *crop, size_t alignment)
+void calculate_rect(struct hwc_win_info_t *win, hwc_layer_1_t *cur,
+        sec_rect *rect)
 {
-    double aspect = 1.0 * h / w;
-    T w_orig = w, h_orig = h;
+    rect->x = cur->displayFrame.left;
+    rect->y = cur->displayFrame.top;
+    rect->w = cur->displayFrame.right - cur->displayFrame.left;
+    rect->h = cur->displayFrame.bottom - cur->displayFrame.top;
 
-    w = ALIGN(w, alignment);
-    h = round(aspect * w);
-    if (crop) {
-        crop->left = (w - w_orig) / 2;
-        crop->top = (h - h_orig) / 2;
-        crop->right = crop->left + w_orig;
-        crop->bottom = crop->top + h_orig;
+    if (rect->x < 0) {
+        if (rect->w + rect->x > win->lcd_info.xres)
+            rect->w = win->lcd_info.xres;
+        else
+            rect->w = rect->w + rect->x;
+        rect->x = 0;
+    } else {
+        if (rect->w + rect->x > win->lcd_info.xres)
+            rect->w = win->lcd_info.xres - rect->x;
+    }
+    if (rect->y < 0) {
+        if (rect->h + rect->y > win->lcd_info.yres)
+            rect->h = win->lcd_info.yres;
+        else
+            rect->h = rect->h + rect->y;
+        rect->y = 0;
+    } else {
+        if (rect->h + rect->y > win->lcd_info.yres)
+            rect->h = win->lcd_info.yres - rect->y;
     }
 }
 
-static bool is_transformed(const hwc_layer_1_t &layer)
+static int set_src_dst_img_rect(hwc_layer_1_t *cur,
+        struct hwc_win_info_t *win,
+        struct sec_img *src_img,
+        struct sec_img *dst_img,
+        struct sec_rect *src_rect,
+        struct sec_rect *dst_rect,
+        int win_idx)
 {
-    return layer.transform != 0;
-}
+    private_handle_t *prev_handle = (private_handle_t *)(cur->handle);
+    sec_rect rect;
 
-static bool is_rotated(const hwc_layer_1_t &layer)
-{
-    return (layer.transform & HAL_TRANSFORM_ROT_90) ||
-            (layer.transform & HAL_TRANSFORM_ROT_180);
-}
+    /* 1. Set src_img from prev_handle */
+    src_img->f_w     = prev_handle->width;
+    src_img->f_h     = prev_handle->height;
+    src_img->w       = prev_handle->width;
+    src_img->h       = prev_handle->height;
+    src_img->format  = prev_handle->format;
+    src_img->base    = (uint32_t)prev_handle->base;
+    src_img->offset  = prev_handle->offset;
+    src_img->mem_id  = prev_handle->fd;
+    src_img->paddr  = prev_handle->paddr;
+    src_img->usage  = prev_handle->usage;
+    src_img->uoffset  = prev_handle->uoffset;
+    src_img->voffset  = prev_handle->voffset;
 
-static bool is_scaled(const hwc_layer_1_t &layer)
-{
-    return WIDTH(layer.displayFrame) != WIDTH(layer.sourceCrop) ||
-            HEIGHT(layer.displayFrame) != HEIGHT(layer.sourceCrop);
-}
+    src_img->mem_type = HWC_VIRT_MEM_TYPE;
 
-static inline bool fimc_dst_cfg_changed(exynos_fimc_img &c1, exynos_fimc_img &c2)
-{
-    return c1.x != c2.x ||
-            c1.y != c2.y ||
-            c1.w != c2.w ||
-            c1.h != c2.h ||
-            c1.format != c2.format ||
-            c1.rot != c2.rot ||
-            c1.cacheable != c2.cacheable ||
-            c1.drmMode != c2.drmMode;
-}
-
-static inline bool fimc_src_cfg_changed(exynos_fimc_img &c1, exynos_fimc_img &c2)
-{
-    return fimc_dst_cfg_changed(c1, c2) ||
-            c1.fw != c2.fw ||
-            c1.fh != c2.fh;
-}
-
-static enum s3c_fb_pixel_format exynos4_format_to_s3c_format(int format)
-{
-    switch (format) {
-    case HAL_PIXEL_FORMAT_RGBA_8888:
-        return S3C_FB_PIXEL_FORMAT_RGBA_8888;
-    case HAL_PIXEL_FORMAT_RGBX_8888:
-        return S3C_FB_PIXEL_FORMAT_RGBX_8888;
-    case HAL_PIXEL_FORMAT_RGBA_5551:
-        return S3C_FB_PIXEL_FORMAT_RGBA_5551;
-    case HAL_PIXEL_FORMAT_RGB_565:
-        return S3C_FB_PIXEL_FORMAT_RGB_565;
-    case HAL_PIXEL_FORMAT_BGRA_8888:
-        return S3C_FB_PIXEL_FORMAT_BGRA_8888;
-    default:
-        return S3C_FB_PIXEL_FORMAT_MAX;
-    }
-}
-
-static bool exynos4_format_is_supported(int format)
-{
-    return exynos4_format_to_s3c_format(format) < S3C_FB_PIXEL_FORMAT_MAX;
-}
-
-static bool exynos4_format_is_rgb(int format)
-{
-    switch (format) {
-    case HAL_PIXEL_FORMAT_RGBA_8888:
-    case HAL_PIXEL_FORMAT_RGBX_8888:
-    case HAL_PIXEL_FORMAT_RGB_888:
-    case HAL_PIXEL_FORMAT_RGB_565:
-    case HAL_PIXEL_FORMAT_BGRA_8888:
-    case HAL_PIXEL_FORMAT_RGBA_5551:
-    case HAL_PIXEL_FORMAT_RGBA_4444:
-        return true;
-
-    default:
-        return false;
-    }
-}
-
-static bool exynos4_format_is_supported_by_fimc(int format)
-{
-    switch (format) {
-    case HAL_PIXEL_FORMAT_RGBX_8888:
-    case HAL_PIXEL_FORMAT_RGB_565:
-    case HAL_PIXEL_FORMAT_EXYNOS_YV12:
-    case HAL_PIXEL_FORMAT_YCbCr_420_SP:
-    case HAL_PIXEL_FORMAT_YCbCr_420_SP_TILED:
+    switch (src_img->format) {
+    case HAL_PIXEL_FORMAT_YV12:             /* To support video editor */
     case HAL_PIXEL_FORMAT_YCbCr_420_P:      /* To support SW codec     */
     case HAL_PIXEL_FORMAT_YCrCb_420_SP:
+    case HAL_PIXEL_FORMAT_YCbCr_420_SP:
     case HAL_PIXEL_FORMAT_CUSTOM_YCbCr_420_SP:
     case HAL_PIXEL_FORMAT_CUSTOM_YCrCb_420_SP:
     case HAL_PIXEL_FORMAT_CUSTOM_YCbCr_420_SP_TILED:
@@ -314,914 +190,468 @@ static bool exynos4_format_is_supported_by_fimc(int format)
     case HAL_PIXEL_FORMAT_CUSTOM_YCrCb_422_I:
     case HAL_PIXEL_FORMAT_CUSTOM_CbYCrY_422_I:
     case HAL_PIXEL_FORMAT_CUSTOM_CrYCbY_422_I:
-
-        return true;
-
+        src_img->f_w = (src_img->f_w + 15) & ~15;
+        src_img->f_h = (src_img->f_h + 1) & ~1;
+        break;
     default:
-        return false;
+        src_img->f_w = src_img->w;
+        src_img->f_h = src_img->h;
+        break;
     }
-}
 
-static bool exynos4_format_is_ycrcb(int format)
-{
-    return format == HAL_PIXEL_FORMAT_EXYNOS_YV12;
-}
+    /* 2. Set dst_img from window(lcd) */
+    calculate_rect(win, cur, &rect);
+    dst_img->f_w = win->lcd_info.xres;
+    dst_img->f_h = win->lcd_info.yres;
+    dst_img->w = rect.w;
+    dst_img->h = rect.h;
 
-static bool exynos4_format_requires_fimc(int format)
-{
-    return (exynos4_format_is_supported_by_fimc(format) &&
-           (format != HAL_PIXEL_FORMAT_RGBX_8888) && (format != HAL_PIXEL_FORMAT_RGB_565));
-}
-
-static uint8_t exynos4_format_to_bpp(int format)
-{
-    switch (format) {
-    case HAL_PIXEL_FORMAT_RGBA_8888:
-    case HAL_PIXEL_FORMAT_RGBX_8888:
-    case HAL_PIXEL_FORMAT_BGRA_8888:
-    case HAL_PIXEL_FORMAT_RGB_888:
-        return 32;
-
-    case HAL_PIXEL_FORMAT_RGBA_5551:
-    case HAL_PIXEL_FORMAT_RGBA_4444:
-    case HAL_PIXEL_FORMAT_RGB_565:
-        return 16;
-
+    switch (win->lcd_info.bits_per_pixel) {
+    case 32:
+        dst_img->format = HAL_PIXEL_FORMAT_RGBX_8888;
+        break;
     default:
-        ALOGW("unrecognized pixel format %u", format);
-        return 0;
+        dst_img->format = HAL_PIXEL_FORMAT_RGB_565;
+        break;
     }
-}
 
-static bool is_x_aligned(const hwc_layer_1_t &layer, int format)
-{
-    if (!exynos4_format_is_supported(format))
-        return true;
+    dst_img->base     = win->addr[win->buf_index];
+    dst_img->offset   = 0;
+    dst_img->mem_id   = 0;
+    dst_img->mem_type = HWC_PHYS_MEM_TYPE;
 
-    uint8_t bpp = exynos4_format_to_bpp(format);
-    uint8_t pixel_alignment = 32 / bpp;
-
-    return (layer.displayFrame.left % pixel_alignment) == 0 &&
-            (layer.displayFrame.right % pixel_alignment) == 0;
-}
-
-static bool dst_crop_w_aligned(int dest_w)
-{
-    int dst_crop_w_alignement;
-
-   /* FIMC's dst crop size should be aligned 128Bytes */
-    dst_crop_w_alignement = FIMC_DST_CROP_W_ALIGNMENT_RGB888;
-
-    return (dest_w % dst_crop_w_alignement) == 0;
-}
-
-static bool exynos4_supports_fimc(hwc_layer_1_t &layer, int format,
-        bool local_path)
-{
-    private_handle_t *handle = private_handle_t::dynamicCast(layer.handle);
-
-    int max_w = is_rotated(layer) ? 1920 : 8192;
-    int max_h = is_rotated(layer) ? 1920 : 4224;
-
-    bool rot90or270 = !!(layer.transform & HAL_TRANSFORM_ROT_90);
-    // n.b.: HAL_TRANSFORM_ROT_270 = HAL_TRANSFORM_ROT_90 |
-    //                               HAL_TRANSFORM_ROT_180
-
-    int src_w = WIDTH(layer.sourceCrop), src_h = HEIGHT(layer.sourceCrop);
-    int dest_w, dest_h;
-    if (rot90or270) {
-        dest_w = HEIGHT(layer.displayFrame);
-        dest_h = WIDTH(layer.displayFrame);
+    /* 3. Set src_rect(crop rect) */
+    if (cur->displayFrame.left < 0) {
+        src_rect->x =
+            (0 - cur->displayFrame.left)
+            *(src_img->w)
+            /(cur->displayFrame.right - cur->displayFrame.left);
+        if (cur->displayFrame.right > win->lcd_info.xres) {
+            src_rect->w =
+                (cur->sourceCrop.right - cur->sourceCrop.left) -
+                src_rect->x -
+                (cur->displayFrame.right - win->lcd_info.xres)
+                *(src_img->w)
+                /(cur->displayFrame.right - cur->displayFrame.left);
+        } else {
+            src_rect->w =
+                (cur->sourceCrop.right - cur->sourceCrop.left) -
+                src_rect->x;
+        }
     } else {
-        dest_w = WIDTH(layer.displayFrame);
-        dest_h = HEIGHT(layer.displayFrame);
+        src_rect->x = cur->sourceCrop.left;
+        if (cur->displayFrame.right > win->lcd_info.xres) {
+            src_rect->w =
+                (cur->sourceCrop.right - cur->sourceCrop.left) -
+                src_rect->x -
+                (cur->displayFrame.right - win->lcd_info.xres)
+                *(src_img->w)
+                /(cur->displayFrame.right - cur->displayFrame.left);
+        } else {
+            src_rect->w =
+                (cur->sourceCrop.right - cur->sourceCrop.left);
+        }
+    }
+    if (cur->displayFrame.top < 0) {
+        src_rect->y =
+            (0 - cur->displayFrame.top)
+            *(src_img->h)
+            /(cur->displayFrame.bottom - cur->displayFrame.top);
+        if (cur->displayFrame.bottom > win->lcd_info.yres) {
+            src_rect->h =
+                (cur->sourceCrop.bottom - cur->sourceCrop.top) -
+                src_rect->y -
+                (cur->displayFrame.bottom - win->lcd_info.yres)
+                *(src_img->h)
+                /(cur->displayFrame.bottom - cur->displayFrame.top);
+        } else {
+            src_rect->h =
+                (cur->sourceCrop.bottom - cur->sourceCrop.top) -
+                src_rect->y;
+        }
+    } else {
+        src_rect->y = cur->sourceCrop.top;
+        if (cur->displayFrame.bottom > win->lcd_info.yres) {
+            src_rect->h =
+                (cur->sourceCrop.bottom - cur->sourceCrop.top) -
+                src_rect->y -
+                (cur->displayFrame.bottom - win->lcd_info.yres)
+                *(src_img->h)
+                /(cur->displayFrame.bottom - cur->displayFrame.top);
+        } else {
+            src_rect->h =
+                (cur->sourceCrop.bottom - cur->sourceCrop.top);
+        }
     }
 
-    if (handle->flags & GRALLOC_USAGE_PROTECTED)
-        align_crop_and_center(dest_w, dest_h, NULL,
-                FIMC_DST_CROP_W_ALIGNMENT_RGB888);
+    SEC_HWC_Log(HWC_LOG_DEBUG,
+            "crop information()::"
+            "sourceCrop left(%d),top(%d),right(%d),bottom(%d),"
+            "src_rect x(%d),y(%d),w(%d),h(%d),"
+            "prev_handle w(%d),h(%d)",
+            cur->sourceCrop.left,
+            cur->sourceCrop.top,
+            cur->sourceCrop.right,
+            cur->sourceCrop.bottom,
+            src_rect->x, src_rect->y, src_rect->w, src_rect->h,
+            prev_handle->width, prev_handle->height);
 
-    int max_downscale = local_path ? 4 : 16;
-    const int max_upscale = 8;
+    src_rect->x = SEC_MAX(src_rect->x, 0);
+    src_rect->y = SEC_MAX(src_rect->y, 0);
+    src_rect->w = SEC_MAX(src_rect->w, 0);
+    src_rect->w = SEC_MIN(src_rect->w, prev_handle->width);
+    src_rect->h = SEC_MAX(src_rect->h, 0);
+    src_rect->h = SEC_MIN(src_rect->h, prev_handle->height);
 
-    return exynos4_format_is_supported_by_fimc(format) &&
-            dst_crop_w_aligned(dest_w) &&
-            handle->stride <= max_w &&
-            handle->stride % FIMC_W_ALIGNMENT == 0 &&
-            src_w <= dest_w * max_downscale &&
-            dest_w <= src_w * max_upscale &&
-            //handle->vstride <= max_h &&
-            //handle->vstride % FIMC_H_ALIGNMENT == 0 &&
-            src_h <= dest_h * max_downscale &&
-            dest_h <= src_h * max_upscale &&
-            // per 46.2
-            (!rot90or270 || layer.sourceCrop.top % 2 == 0) &&
-            (!rot90or270 || layer.sourceCrop.left % 2 == 0);
-            // per 46.3.1.6
+    /* 4. Set dst_rect(fb or lcd)
+     *    fimc dst image will be stored from left top corner
+     */
+    dst_rect->x = 0;
+    dst_rect->y = 0;
+    dst_rect->w = win->rect_info.w;
+    dst_rect->h = win->rect_info.h;
+
+    /* Summery */
+    SEC_HWC_Log(HWC_LOG_DEBUG,
+            "exynos4_set_src_dst_img_rect()::"
+            "SRC w(%d),h(%d),f_w(%d),f_h(%d),fmt(0x%x),"
+            "base(0x%x),offset(%d),paddr(0x%X),mem_id(%d),mem_type(%d)=>\r\n"
+            "   DST w(%d),h(%d),f(0x%x),base(0x%x),"
+            "offset(%d),mem_id(%d),mem_type(%d),"
+            "rot(%d),win_idx(%d)"
+            "   SRC_RECT x(%d),y(%d),w(%d),h(%d)=>"
+            "DST_RECT x(%d),y(%d),w(%d),h(%d)",
+            src_img->w, src_img->h, src_img->f_w, src_img->f_h, src_img->format,
+            src_img->base, src_img->offset, src_img->paddr, src_img->mem_id, src_img->mem_type,
+            dst_img->w, dst_img->h,  dst_img->format, dst_img->base,
+            dst_img->offset, dst_img->mem_id, dst_img->mem_type,
+            cur->transform, win_idx,
+            src_rect->x, src_rect->y, src_rect->w, src_rect->h,
+            dst_rect->x, dst_rect->y, dst_rect->w, dst_rect->h);
+
+    return 0;
 }
 
-static bool exynos4_requires_fimc(hwc_layer_1_t &layer, int format)
+static int get_hwc_compos_decision(hwc_layer_1_t *cur, int iter, int win_cnt)
 {
-    return exynos4_format_requires_fimc(format) || is_scaled(layer)
-            || is_transformed(layer) || !is_x_aligned(layer, format);
+  return HWC_FRAMEBUFFER;
+    if(cur->flags & HWC_SKIP_LAYER  || !cur->handle) {
+        ALOGV("%s::is_skip_layer  %d  cur->handle %x ",  __func__, cur->flags & HWC_SKIP_LAYER, cur->handle);
+        return HWC_FRAMEBUFFER;
+    }
+
+    private_handle_t *prev_handle = (private_handle_t *)(cur->handle);
+    int compositionType = HWC_FRAMEBUFFER;
+
+    if (iter == 0) {
+    /* check here....if we have any resolution constraints */
+        if (((cur->sourceCrop.right - cur->sourceCrop.left + 1) < 16) ||
+            ((cur->sourceCrop.bottom - cur->sourceCrop.top + 1) < 8))
+            return compositionType;
+
+        if ((cur->transform == HAL_TRANSFORM_ROT_90) ||
+            (cur->transform == HAL_TRANSFORM_ROT_270)) {
+            if (((cur->displayFrame.right - cur->displayFrame.left + 1) < 4) ||
+                ((cur->displayFrame.bottom - cur->displayFrame.top + 1) < 8))
+                return compositionType;
+        } else if (((cur->displayFrame.right - cur->displayFrame.left + 1) < 8) ||
+                   ((cur->displayFrame.bottom - cur->displayFrame.top + 1) < 4)) {
+            return compositionType;
+        }
+
+        switch (prev_handle->format) {
+        case HAL_PIXEL_FORMAT_CUSTOM_YCbCr_420_SP:
+        case HAL_PIXEL_FORMAT_CUSTOM_YCrCb_420_SP:
+        case HAL_PIXEL_FORMAT_CUSTOM_YCbCr_420_SP_TILED:
+            compositionType = HWC_OVERLAY;
+            break;
+        case HAL_PIXEL_FORMAT_YV12:                 /* YCrCb_420_P */
+        case HAL_PIXEL_FORMAT_YCbCr_420_P:
+        case HAL_PIXEL_FORMAT_YCrCb_420_SP:
+        case HAL_PIXEL_FORMAT_YCbCr_420_SP:
+            if ((prev_handle->usage & GRALLOC_USAGE_HWC_HWOVERLAY) &&
+                 (cur->blending == HWC_BLENDING_NONE))
+                compositionType = HWC_OVERLAY;
+            else
+                compositionType = HWC_FRAMEBUFFER;
+            break;
+        default:
+            compositionType = HWC_FRAMEBUFFER;
+            break;
+        }
+    }
+
+    ALOGV("%s::compositionType(%d)=>0:FB,1:OVERLAY \r\n"
+            "   format(0x%x),magic(0x%x),flags(%d),size(%d),offset(%d)"
+            "b_addr(0x%x),usage(0x%x),w(%d),h(%d),bpp(%d)",
+            "get_hwc_compos_decision()", compositionType,
+            prev_handle->format, prev_handle->magic, prev_handle->flags,
+            prev_handle->size, prev_handle->offset, prev_handle->base,
+            prev_handle->usage, prev_handle->width, prev_handle->height,
+            prev_handle->bpp);
+
+    return  compositionType;
 }
 
-int hdmi_get_config(struct exynos4_hwc_composer_device_1_t *dev)
+static void reset_win_rect_info(hwc_win_info_t *win)
 {
-    struct v4l2_dv_preset preset;
-    struct v4l2_dv_enum_preset enum_preset;
-    struct v4l2_dv_enum_preset default_preset;
-    int index = 0;
-    bool found = false;
-    int ret;
+    win->rect_info.x = 0;
+    win->rect_info.y = 0;
+    win->rect_info.w = 0;
+    win->rect_info.h = 0;
+    return;
+}
 
-    if(dev->hdmi_configured)
-      return 0;
+static int assign_overlay_window(exynos4_hwc_composer_device_1_t *ctx, hwc_layer_1_t *cur,
+        int win_idx, int layer_idx)
+{
+    struct hwc_win_info_t   *win;
+    sec_rect   rect;
+    int ret = 0;
 
-    if (ioctl(dev->hdmi_layers[1].fd, VIDIOC_G_DV_PRESET, &preset) < 0) {
-        ALOGE("%s: g_dv_preset error, %d", __func__, errno);
+    if (NUM_OF_WIN <= win_idx)
         return -1;
+
+    win = &ctx->win[win_idx];
+
+    ALOGV("%s:: left(%d),top(%d),right(%d),bottom(%d),transform(%d)"
+            "lcd_info.xres(%d),lcd_info.yres(%d)",
+            "++assign_overlay_window()",
+            cur->displayFrame.left, cur->displayFrame.top,
+            cur->displayFrame.right, cur->displayFrame.bottom, cur->transform,
+            win->lcd_info.xres, win->lcd_info.yres);
+
+    calculate_rect(win, cur, &rect);
+
+    if ((rect.x != win->rect_info.x) || (rect.y != win->rect_info.y) ||
+        (rect.w != win->rect_info.w) || (rect.h != win->rect_info.h)){
+        win->rect_info.x = rect.x;
+        win->rect_info.y = rect.y;
+        win->rect_info.w = rect.w;
+        win->rect_info.h = rect.h;
+            //turnoff the window and set the window position with new conf...
+        if (window_set_pos(win) < 0) {
+            ALOGE("%s::window_set_pos is failed : %s",
+                    __func__, strerror(errno));
+            ret = -1;
+        }
+        ctx->layer_prev_buf[win_idx] = 0;
     }
 
-    while (true) {
-        enum_preset.index = index++;
-        ret = ioctl(dev->hdmi_layers[1].fd, VIDIOC_ENUM_DV_PRESETS, &enum_preset);
-        if (ret < 0) {
-            if (errno == EINVAL)
-                break;
-            ALOGE("%s: enum_dv_presets error, %d", __func__, errno);
-            return -1;
+    win->layer_index = layer_idx;
+    win->status = HWC_WIN_RESERVED;
+
+    ALOGV("%s:: win_x %d win_y %d win_w %d win_h %d  lay_idx %d win_idx %d\n",
+            "--assign_overlay_window()",
+            win->rect_info.x, win->rect_info.y, win->rect_info.w,
+            win->rect_info.h, win->layer_index, win_idx );
+
+    return 0;
+}
+
+#ifdef SKIP_DUMMY_UI_LAY_DRAWING
+static void get_hwc_ui_lay_skipdraw_decision(exynos4_hwc_composer_device_1_t *ctx,
+                               hwc_display_contents_1_t* list)
+{
+    private_handle_t *prev_handle;
+    hwc_layer_1_t* cur;
+    int num_of_fb_lay_skip = 0;
+    int fb_lay_tot = ctx->num_of_fb_layer + ctx->num_of_fb_lay_skip;
+
+    if (fb_lay_tot > NUM_OF_DUMMY_WIN)
+        return;
+
+    if (fb_lay_tot < 1) {
+#ifdef GL_WA_OVLY_ALL
+        ctx->ui_skip_frame_cnt++;
+        if (ctx->ui_skip_frame_cnt >= THRES_FOR_SWAP) {
+            ctx->ui_skip_frame_cnt = 0;
+            ctx->num_of_fb_layer_prev = 1;
         }
+#endif
+        return;
+    }
 
-        if (enum_preset.preset == HDMI_DEFAULT_PRESET_ID) {
-            default_preset.width  = enum_preset.width;
-            default_preset.height = enum_preset.height;
-            default_preset.preset = HDMI_DEFAULT_PRESET_ID;
+    if (ctx->fb_lay_skip_initialized) {
+        for (int cnt = 0; cnt < fb_lay_tot; cnt++) {
+            cur = &list->hwLayers[ctx->win_virt[cnt].layer_index];
+            if (ctx->win_virt[cnt].layer_prev_buf == (uint32_t)cur->handle)
+                num_of_fb_lay_skip++;
         }
-
-        ALOGV("%s: %d preset=%02d width=%d height=%d name=%s",
-                    _func__, enum_preset.index, enum_preset.preset,
-                    enum_preset.width, enum_preset.height, enum_preset.name);
-
-        if (preset.preset == enum_preset.preset) {
-             if(dev->edid_enabled){
-                if (!hdmi_check_resolution(preset.preset)) {
-                    dev->hdmi_w  = enum_preset.width;
-                    dev->hdmi_h  = enum_preset.height;
-                    found = true;
-                    break;
-                } else
-                    found = false;
+#ifdef GL_WA_OVLY_ALL
+        if (ctx->ui_skip_frame_cnt >= THRES_FOR_SWAP)
+            num_of_fb_lay_skip = 0;
+#endif
+        if (num_of_fb_lay_skip != fb_lay_tot) {
+            ctx->num_of_fb_layer = fb_lay_tot;
+            ctx->num_of_fb_lay_skip = 0;
+#ifdef GL_WA_OVLY_ALL
+            ctx->ui_skip_frame_cnt = 0;
+#endif
+            for (int cnt = 0; cnt < fb_lay_tot; cnt++) {
+                cur = &list->hwLayers[ctx->win_virt[cnt].layer_index];
+                ctx->win_virt[cnt].layer_prev_buf = (uint32_t)cur->handle;
+                cur->compositionType = HWC_FRAMEBUFFER;
+                ctx->win_virt[cnt].status = HWC_WIN_FREE;
+            }
+        } else {
+            ctx->num_of_fb_layer = 0;
+            ctx->num_of_fb_lay_skip = fb_lay_tot;
+#ifdef GL_WA_OVLY_ALL
+            ctx->ui_skip_frame_cnt++;
+#endif
+            for (int cnt = 0; cnt < fb_lay_tot; cnt++) {
+                cur = &list->hwLayers[ctx->win_virt[cnt].layer_index];
+                cur->compositionType = HWC_OVERLAY;
+                ctx->win_virt[cnt].status = HWC_WIN_RESERVED;
             }
         }
-    }
-
-    if (!found){
-        preset.preset = HDMI_DEFAULT_PRESET_ID;
-        ret = ioctl(dev->hdmi_layers[1].fd, VIDIOC_S_DV_PRESET, &preset);
-        if (ret < 0) {
-            ALOGE("%s: enum_dv_presets error, %d", __func__, errno);
-            return -1;
-        }
-        dev->hdmi_w  = default_preset.width;
-        dev->hdmi_h  = default_preset.height;
-        found = true;
-    }
-
-    dev->hdmi_configured = 1;
-    return found ? 0 : -1;
-}
-
-static enum s3c_fb_blending exynos4_blending_to_s3c_blending(int32_t blending)
-{
-    switch (blending) {
-    case HWC_BLENDING_NONE:
-        return S3C_FB_BLENDING_NONE;
-    case HWC_BLENDING_PREMULT:
-        return S3C_FB_BLENDING_PREMULT;
-    case HWC_BLENDING_COVERAGE:
-        return S3C_FB_BLENDING_COVERAGE;
-
-    default:
-        return S3C_FB_BLENDING_MAX;
-    }
-}
-
-static bool exynos4_blending_is_supported(int32_t blending)
-{
-    return exynos4_blending_to_s3c_blending(blending) < S3C_FB_BLENDING_MAX;
-}
-
-
-static int hdmi_enable_layer(struct exynos4_hwc_composer_device_1_t *dev,
-                             hdmi_layer_t &hl)
-{
-    if (hl.enabled)
-        return 0;
-
-    struct v4l2_requestbuffers reqbuf;
-    memset(&reqbuf, 0, sizeof(reqbuf));
-    reqbuf.count  = NUM_HDMI_BUFFERS;
-    reqbuf.type   = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-    reqbuf.memory = V4L2_MEMORY_USERPTR;
-    if (exynos_v4l2_reqbufs(hl.fd, &reqbuf) < 0) {
-        ALOGE("%s: layer%d: reqbufs failed %d", __func__, hl.id, errno);
-        return -1;
-    }
-
-    if (reqbuf.count != NUM_HDMI_BUFFERS) {
-        ALOGE("%s: layer%d: didn't get buffer", __func__, hl.id);
-        return -1;
-    }
-
-    if (hl.id == 1) {
-        if (exynos_v4l2_s_ctrl(hl.fd, V4L2_CID_TV_PIXEL_BLEND_ENABLE, 1) < 0) {
-            ALOGE("%s: layer%d: PIXEL_BLEND_ENABLE failed %d", __func__,
-                                                                hl.id, errno);
-            return -1;
-        }
-    }
-
-    ALOGV("%s: layer%d enabled", __func__, hl.id);
-    hl.enabled = true;
-    return 0;
-}
-
-static void hdmi_disable_layer(struct exynos4_hwc_composer_device_1_t *dev,
-                               hdmi_layer_t &hl)
-{
-    if (!hl.enabled)
-        return;
-
-    if (hl.streaming) {
-        if (exynos_v4l2_streamoff(hl.fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) < 0)
-            ALOGE("%s: layer%d: streamoff failed %d", __func__, hl.id, errno);
-        hl.streaming = false;
-    }
-
-    struct v4l2_requestbuffers reqbuf;
-    memset(&reqbuf, 0, sizeof(reqbuf));
-    reqbuf.type   = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-    reqbuf.memory = V4L2_MEMORY_USERPTR;
-    if (exynos_v4l2_reqbufs(hl.fd, &reqbuf) < 0)
-        ALOGE("%s: layer%d: reqbufs failed %d", __func__, hl.id, errno);
-
-    memset(&hl.cfg, 0, sizeof(hl.cfg));
-    hl.current_buf = 0;
-    hl.queued_buf = 0;
-    hl.enabled = false;
-
-    ALOGV("%s: layer%d disabled", __func__, hl.id);
-}
-
-static int hdmi_display_edid_info(struct exynos4_hwc_composer_device_1_t *dev)
-{
-    int ret = 0;
-    if (dev->edid_enabled)
-        return 1;
-    if (!EDIDOpen())
-        ALOGE("EDIDInit() failed!\n");
-    else {
-        if (!EDIDRead()) {
-            ALOGE("EDIDRead() failed!\n");
-            if (!EDIDClose())
-                ALOGE("EDIDClose() failed!\n");
-        } else {
-            display_menu();
-            ret = 1;
-        }
-    }
-    dev->edid_enabled = ret;
-    return ret;
-}
-
-static int hdmi_open(struct exynos4_hwc_composer_device_1_t *dev)
-{
-    if(dev->hdmi_layers[0].fd > 0)
-        return 0;
-
-    dev->hdmi_layers[0].id = 0;
-#ifdef USE_MIXER_VP
-    dev->hdmi_layers[0].fd = open("/dev/video12", O_RDWR);
-#else
-    dev->hdmi_layers[0].fd = open("/dev/video10", O_RDWR);
-#endif
-    if (dev->hdmi_layers[0].fd < 0) {
-	    ALOGE("failed to open hdmi layer0 device");
-            return -1;
-    }
-
-    dev->hdmi_layers[1].id = 1;
-    dev->hdmi_layers[1].fd = open("/dev/video11", O_RDWR);
-    if (dev->hdmi_layers[1].fd < 0) {
-        ALOGE("failed to open hdmi layer1 device");
-        return -1;
-    }
-    return 0;
-}
-
-static void hdmi_close(struct exynos4_hwc_composer_device_1_t *dev)
-{
-    close(dev->hdmi_layers[0].fd);
-    close(dev->hdmi_layers[1].fd);
-
-    dev->hdmi_layers[0].fd = -1;
-    dev->hdmi_layers[1].fd = -1;
-    dev->hdmi_configured = 0;
-    dev->edid_enabled =0;
-}
-
-static int hdmi_enable(struct exynos4_hwc_composer_device_1_t *dev)
-{
-    if (dev->hdmi_enabled)
-        return 0;
-
-    if (dev->hdmi_blanked)
-        return 0;
-
-    if (hdmi_open(dev) < 0)
-	return 0;
-
-
-    if (exynos_v4l2_s_ctrl(dev->hdmi_layers[1].fd, V4L2_CID_TV_HDCP_ENABLE, \
-                dev->edid_enabled) < 0)
-	    ALOGE("%s: s_ctrl(CID_TV_HDCP_ENABLE) failed %d", __func__, errno);
-
-    hdmi_enable_layer(dev, dev->hdmi_layers[1]);
-
-    dev->hdmi_enabled = true;
-    return 0;
-}
-
-static void hdmi_disable(struct exynos4_hwc_composer_device_1_t *dev)
-{
-    if (!dev->hdmi_enabled)
-        return;
-
-    hdmi_disable_layer(dev, dev->hdmi_layers[0]);
-    hdmi_disable_layer(dev, dev->hdmi_layers[1]);
-    hdmi_close(dev);
-    EDIDClose();
-#ifndef USE_MIXER_VP
-    exynos4_cleanup_fimc_m2m(dev, HDMI_FIMC_IDX);
-#endif
-    dev->hdmi_enabled = false;
-}
-#ifdef USE_MIXER_VP
-static int hdmi_vp_output(struct exynos4_hwc_composer_device_1_t *dev,
-                       hdmi_layer_t &hl,
-                       hwc_layer_1_t &layer,
-                       private_handle_t *h,
-                       int acquireFenceFd,
-                       int *releaseFenceFd)
-{
-    int ret = 0;
-
-    exynos_fimc_img cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    cfg.x = layer.displayFrame.left;
-    cfg.y = layer.displayFrame.top;
-    cfg.w = WIDTH(layer.displayFrame);
-    cfg.h = HEIGHT(layer.displayFrame);
-
-    exynos_fimc_img sourcecropcfg;
-    memset(&sourcecropcfg, 0, sizeof(sourcecropcfg));
-    sourcecropcfg.x = layer.sourceCrop.left;
-    sourcecropcfg.y = layer.sourceCrop.top;
-    sourcecropcfg.w = WIDTH(layer.sourceCrop);
-    sourcecropcfg.h = HEIGHT(layer.sourceCrop);
-
-    if (fimc_src_cfg_changed(hl.cfg, cfg)) {
-        hdmi_disable_layer(dev, hl);
-
-        struct v4l2_format fmt;
-        memset(&fmt, 0, sizeof(fmt));
-        fmt.type  = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-        fmt.fmt.pix_mp.width       = h->stride;
-        fmt.fmt.pix_mp.height      = h->vstride;
-        fmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12;
-        fmt.fmt.pix_mp.num_planes  = 2;
-        fmt.fmt.pix_mp.field       = V4L2_FIELD_ANY;
-
-        ret = exynos_v4l2_s_fmt(hl.fd, &fmt);
-        if (ret < 0) {
-            ALOGE("%s: layer%d: s_fmt failed %d", __func__, hl.id, errno);
-            goto err;
-        }
-
-        struct v4l2_crop crop;
-        crop.type     = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-        crop.c.left   = cfg.x;
-        crop.c.top    = cfg.y;
-        crop.c.width  = cfg.w;
-        crop.c.height = cfg.h - 8;
-        if (exynos_v4l2_s_crop(hl.fd, &crop) < 0) {
-            ALOGE("%s: layer=%d s_crop failed", __func__,hl.id);
-            goto err;
-        }
-
-        memset(&crop, 0, sizeof(crop));
-        crop.type     = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-        crop.c.left   = 0;
-        crop.c.top    = 0;
-        crop.c.width  = sourcecropcfg.w;
-        crop.c.height = sourcecropcfg.h;
-        if (exynos_v4l2_s_crop(hl.fd, &crop) < 0) {
-            ALOGE("%s: layer=%d s_crop failed", __func__,hl.id);
-            goto err;
-        }
-
-        hdmi_enable_layer(dev, hl);
-
-        ALOGV("HDMI layer%d configuration:", hl.id);
-        dump_fimc_img(cfg);
-        hl.cfg = cfg;
-    }
-
-    struct v4l2_buffer buffer;
-    struct v4l2_plane planes[2];
-
-    if (hl.queued_buf == NUM_HDMI_BUFFERS) {
-        memset(&buffer, 0, sizeof(buffer));
-        memset(planes, 0, sizeof(planes));
-        buffer.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-        buffer.memory = V4L2_MEMORY_USERPTR;
-        buffer.length = 2;
-        buffer.m.planes = planes;
-        ret = exynos_v4l2_dqbuf(hl.fd, &buffer);
-        if (ret < 0) {
-            ALOGE("%s: layer%d: dqbuf failed %d", __func__, hl.id, errno);
-            goto err;
-        }
-        hl.queued_buf--;
-    }
-
-    memset(&buffer, 0, sizeof(buffer));
-    memset(planes, 0, sizeof(planes));
-
-    buffer.index = hl.current_buf;
-    buffer.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-    buffer.memory = V4L2_MEMORY_USERPTR;
-    buffer.flags = V4L2_BUF_FLAG_USE_SYNC;
-    buffer.reserved = acquireFenceFd;
-
-    buffer.length = 2;
-    buffer.m.planes = planes;
-    buffer.m.planes[0].m.userptr = h->base;
-    buffer.m.planes[0].length = (h->stride * h->vstride) * 3 >> 1;
-    if (exynos_v4l2_qbuf(hl.fd, &buffer) < 0) {
-        ALOGE("%s: layer%d: qbuf failed %d", __func__, hl.id, errno);
-        ret = -1;
-        goto err;
-    }
-
-    if (releaseFenceFd)
-        *releaseFenceFd = buffer.reserved;
-    else
-        close(buffer.reserved);
-
-    hl.queued_buf++;
-    hl.current_buf = (hl.current_buf + 1) % NUM_HDMI_BUFFERS;
-
-    if (!hl.streaming) {
-        if (exynos_v4l2_streamon(hl.fd, buffer.type) < 0) {
-            ALOGE("%s: layer%d: streamon failed %d", __func__, hl.id, errno);
-            ret = -1;
-            goto err;
-        }
-        hl.streaming = true;
-    }
-
-err:
-    if (acquireFenceFd >= 0)
-        close(acquireFenceFd);
-
-    return ret;
-}
-#endif
-
-static int hdmi_output(struct exynos4_hwc_composer_device_1_t *dev,
-                       hdmi_layer_t &hl,
-                       hwc_layer_1_t &layer,
-                       private_handle_t *h,
-                       int acquireFenceFd,
-                       int *releaseFenceFd)
-{
-    int ret = 0;
-
-    exynos_fimc_img cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    cfg.x = layer.displayFrame.left;
-    cfg.y = layer.displayFrame.top;
-    cfg.w = WIDTH(layer.displayFrame);
-    cfg.h = HEIGHT(layer.displayFrame);
-
-    if (fimc_src_cfg_changed(hl.cfg, cfg)) {
-        hdmi_disable_layer(dev, hl);
-
-        struct v4l2_format fmt;
-        memset(&fmt, 0, sizeof(fmt));
-        fmt.type  = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-        fmt.fmt.pix_mp.width       = h->stride;
-        fmt.fmt.pix_mp.height      = h->vstride;
-        fmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_BGR32;
-        fmt.fmt.pix_mp.num_planes  = 1;
-        fmt.fmt.pix_mp.field       = V4L2_FIELD_ANY;
-        ret = exynos_v4l2_s_fmt(hl.fd, &fmt);
-        if (ret < 0) {
-            ALOGE("%s: layer%d: s_fmt failed %d", __func__, hl.id, errno);
-            goto err;
-        }
-
-        struct v4l2_crop crop;
-        crop.type     = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-        crop.c.left   = 0;
-        crop.c.top    = 0;
-        crop.c.width  = cfg.w;
-        crop.c.height = cfg.h - 8;
-        if (exynos_v4l2_s_crop(hl.fd, &crop) < 0) {
-            ALOGE("%s: layer=%d s_crop failed", __func__,hl.id);
-            goto err;
-        }
-
-        hdmi_enable_layer(dev, hl);
-
-        ALOGV("HDMI layer%d configuration:", hl.id);
-        dump_fimc_img(cfg);
-        hl.cfg = cfg;
-    }
-
-    struct v4l2_buffer buffer;
-    struct v4l2_plane planes[1];
-
-    if (hl.queued_buf == NUM_HDMI_BUFFERS) {
-        memset(&buffer, 0, sizeof(buffer));
-        memset(planes, 0, sizeof(planes));
-        buffer.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-        buffer.memory = V4L2_MEMORY_USERPTR;
-        buffer.length = 1;
-        buffer.m.planes = planes;
-
-        ret = exynos_v4l2_dqbuf(hl.fd, &buffer);
-        if (ret < 0) {
-            ALOGE("%s: layer%d: dqbuf failed %d", __func__, hl.id, errno);
-            goto err;
-        }
-        hl.current_buf = buffer.index;
-        hl.queued_buf--;
-    }
-
-    memset(&buffer, 0, sizeof(buffer));
-    memset(planes, 0, sizeof(planes));
-    buffer.index = hl.current_buf;
-    buffer.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-    buffer.memory = V4L2_MEMORY_USERPTR;
-    buffer.flags = V4L2_BUF_FLAG_USE_SYNC;
-    buffer.reserved = acquireFenceFd;
-    buffer.length = 1;
-    buffer.m.planes = planes;
-    buffer.m.planes[0].m.userptr = h->base;
-    buffer.m.planes[0].length = (h->stride * h->vstride) << 2;	
-    if (exynos_v4l2_qbuf(hl.fd, &buffer) < 0) {
-        ALOGE("%s: layer%d: qbuf failed %d", __func__, hl.id, errno);
-        ret = -1;
-        goto err;
-    }
-
-    if (releaseFenceFd)
-        *releaseFenceFd = buffer.reserved;
-    else
-        close(buffer.reserved);
-
-    hl.queued_buf++;
-    hl.current_buf = (hl.current_buf + 1) % NUM_HDMI_BUFFERS;
-
-    if (!hl.streaming) {
-        if (exynos_v4l2_streamon(hl.fd, buffer.type) < 0) {
-            ALOGE("%s: layer%d: streamon failed %d", __func__, hl.id, errno);
-            ret = -1;
-            goto err;
-        }
-        hl.streaming = true;
-    }
-
-err:
-    if (acquireFenceFd >= 0)
-        close(acquireFenceFd);
-
-    return ret;
-}
-
-bool exynos4_is_offscreen(hwc_layer_1_t &layer,
-        struct exynos4_hwc_composer_device_1_t *pdev)
-{
-    return layer.sourceCrop.left > pdev->xres ||
-            layer.sourceCrop.right < 0 ||
-            layer.sourceCrop.top > pdev->yres ||
-            layer.sourceCrop.bottom < 0;
-}
-
-size_t exynos4_visible_width(hwc_layer_1_t &layer, int format,
-        struct exynos4_hwc_composer_device_1_t *pdev)
-{
-    int bpp;
-    if (exynos4_requires_fimc(layer, format))
-        bpp = 32;
-    else
-        bpp = exynos4_format_to_bpp(format);
-    int left = max(layer.displayFrame.left, 0);
-    int right = min(layer.displayFrame.right, pdev->xres);
-
-    return (right - left) * bpp / 8;
-}
-
-bool exynos4_supports_overlay(hwc_layer_1_t &layer, size_t i,
-        struct exynos4_hwc_composer_device_1_t *pdev)
-{
-    if (layer.flags & HWC_SKIP_LAYER) {
-        ALOGV("\tlayer %u: skipping", i);
-        return false;
-    }
-
-    private_handle_t *handle = private_handle_t::dynamicCast(layer.handle);
-
-    if (!handle) {
-        ALOGV("\tlayer %u: handle is NULL", i);
-        return false;
-    }
-
-    if (exynos4_visible_width(layer, handle->format, pdev) < BURSTLEN_BYTES) {
-        ALOGV("\tlayer %u: visible area is too narrow", i);
-        return false;
-    }
-    if (exynos4_requires_fimc(layer, handle->format)) {
-        if (!exynos4_supports_fimc(layer, handle->format, false)) {
-            ALOGV("\tlayer %u: fimc required but not supported", i);
-            return false;
-        }
     } else {
-        if (!exynos4_format_is_supported(handle->format)) {
-            ALOGV("\tlayer %u: pixel format %u not supported", i, handle->format);
-            return false;
+        ctx->num_of_fb_lay_skip = 0;
+        for (int i = 0; i < list->numHwLayers ; i++) {
+            if(num_of_fb_lay_skip >= NUM_OF_DUMMY_WIN)
+                break;
+
+            cur = &list->hwLayers[i];
+            if (cur->handle) {
+                prev_handle = (private_handle_t *)(cur->handle);
+
+                switch (prev_handle->format) {
+                case HAL_PIXEL_FORMAT_RGBA_8888:
+                case HAL_PIXEL_FORMAT_BGRA_8888:
+                case HAL_PIXEL_FORMAT_RGBX_8888:
+                case HAL_PIXEL_FORMAT_RGB_565:
+                    cur->compositionType = HWC_FRAMEBUFFER;
+                    ctx->win_virt[num_of_fb_lay_skip].layer_prev_buf =
+                        (uint32_t)cur->handle;
+                    ctx->win_virt[num_of_fb_lay_skip].layer_index = i;
+                    ctx->win_virt[num_of_fb_lay_skip].status = HWC_WIN_FREE;
+                    num_of_fb_lay_skip++;
+                    break;
+                default:
+                    break;
+                }
+            } else {
+                cur->compositionType = HWC_FRAMEBUFFER;
+            }
         }
-    }
-    if (!exynos4_blending_is_supported(layer.blending)) {
-        ALOGV("\tlayer %u: blending %d not supported", i, layer.blending);
-        return false;
-    }
-    if (CC_UNLIKELY(exynos4_is_offscreen(layer, pdev))) {
-        ALOGW("\tlayer %u: off-screen", i);
-        return false;
+
+        if (num_of_fb_lay_skip == fb_lay_tot)
+            ctx->fb_lay_skip_initialized = 1;
     }
 
-    return true;
-}
+    return;
 
-inline bool intersect(const hwc_rect &r1, const hwc_rect &r2)
-{
-    return !(r1.left > r2.right ||
-        r1.right < r2.left ||
-        r1.top > r2.bottom ||
-        r1.bottom < r2.top);
 }
-
-inline hwc_rect intersection(const hwc_rect &r1, const hwc_rect &r2)
-{
-    hwc_rect i;
-    i.top = max(r1.top, r2.top);
-    i.bottom = min(r1.bottom, r2.bottom);
-    i.left = max(r1.left, r2.left);
-    i.right = min(r1.right, r2.right);
-    return i;
-}
+#endif
 
 static int exynos4_prepare_fimd(exynos4_hwc_composer_device_1_t *pdev,
         hwc_display_contents_1_t* contents)
 {
     ALOGV("preparing %u layers for FIMD", contents->numHwLayers);
 
-    memset(pdev->bufs.fimc_map, 0, sizeof(pdev->bufs.fimc_map));
-
     bool force_fb = pdev->force_gpu;
-    for (size_t i = 0; i < NUM_HW_WINDOWS; i++)
-        pdev->bufs.overlay_map[i] = -1;
+    int overlay_win_cnt = 0;
+    int compositionType = 0;
+    int ret;
 
-    bool fb_needed = false;
-    size_t first_fb = 0, last_fb = 0;
+#ifdef SKIP_DUMMY_UI_LAY_DRAWING
+    if ((contents && (!(contents->flags & HWC_GEOMETRY_CHANGED))) &&
+            (pdev->num_of_hwc_layer > 0)) {
+        get_hwc_ui_lay_skipdraw_decision(pdev, contents);
+        return 0;
+    }
+    pdev->fb_lay_skip_initialized = 0;
+    pdev->num_of_fb_lay_skip = 0;
+#ifdef GL_WA_OVLY_ALL
+    pdev->ui_skip_frame_cnt = 0;
+#endif
+
+    for (int i = 0; i < NUM_OF_DUMMY_WIN; i++) {
+        pdev->win_virt[i].layer_prev_buf = 0;
+        pdev->win_virt[i].layer_index = -1;
+        pdev->win_virt[i].status = HWC_WIN_FREE;
+    }
+#endif
+
+    //if geometry is not changed, there is no need to do any work here
+    if (!contents || (!(contents->flags & HWC_GEOMETRY_CHANGED)))
+        return 0;
+
+    //all the windows are free here....
+    for (int i = 0 ; i < NUM_OF_WIN; i++) {
+        pdev->win[i].status = HWC_WIN_FREE;
+        pdev->win[i].buf_index = 0;
+    }
+
+    pdev->num_of_hwc_layer = 0;
+    pdev->num_of_fb_layer = 0;
+    pdev->num_2d_blit_layer = 0;
+
 
     // find unsupported overlays
     for (size_t i = 0; i < contents->numHwLayers; i++) {
-        hwc_layer_1_t &layer = contents->hwLayers[i];
-
-        if (layer.compositionType == HWC_FRAMEBUFFER_TARGET) {
+        hwc_layer_1_t *layer = &contents->hwLayers[i];
+        
+        if (layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
             ALOGV("\tlayer %u: framebuffer target", i);
             continue;
         }
 
-        if (layer.compositionType == HWC_BACKGROUND && !force_fb) {
-            ALOGV("\tlayer %u: background supported", i);
+        if(layer->compositionType == HWC_BACKGROUND || force_fb) {
+            //HWC_BACKGROUND can't directly set to kernel 3.0, use fb
+            layer->compositionType = HWC_FRAMEBUFFER;
+            pdev->num_of_fb_layer++;
             dump_layer(&contents->hwLayers[i]);
             continue;
         }
+        
+        if (overlay_win_cnt < NUM_OF_WIN) {
+            compositionType = get_hwc_compos_decision(layer, 0, overlay_win_cnt);
 
-        if (exynos4_supports_overlay(contents->hwLayers[i], i, pdev) &&
-                !force_fb) {
-            ALOGV("\tlayer %u: overlay supported", i);
-            layer.compositionType = HWC_OVERLAY;
-            dump_layer(&contents->hwLayers[i]);
-            continue;
-        }
+            if (compositionType == HWC_FRAMEBUFFER) {
+                layer->compositionType = HWC_FRAMEBUFFER;
+                pdev->num_of_fb_layer++;
+            } else {
+                ret = assign_overlay_window(pdev, layer, overlay_win_cnt, i);
+                if (ret != 0) {
+                    LOGE("assign_overlay_window fail, change to frambuffer");
+                    layer->compositionType = HWC_FRAMEBUFFER;
+                    pdev->num_of_fb_layer++;
+                    continue;
+                }
 
-        if (!fb_needed) {
-            first_fb = i;
-            fb_needed = true;
+                layer->compositionType = HWC_OVERLAY;
+                layer->hints = HWC_HINT_CLEAR_FB;
+                overlay_win_cnt++;
+                pdev->num_of_hwc_layer++;
+            }
+        } else {
+            layer->compositionType = HWC_FRAMEBUFFER;
+            pdev->num_of_fb_layer++;
         }
-        last_fb = i;
-        layer.compositionType = HWC_FRAMEBUFFER;
 
         dump_layer(&contents->hwLayers[i]);
     }
 
-    // can't composite overlays sandwiched between framebuffers
-    if (fb_needed)
-        for (size_t i = first_fb; i < last_fb; i++)
-            contents->hwLayers[i].compositionType = HWC_FRAMEBUFFER;
 
-    // Incrementally try to add our supported layers to hardware windows.
-    // If adding a layer would violate a hardware constraint, force it
-    // into the framebuffer and try again.  (Revisiting the entire list is
-    // necessary because adding a layer to the framebuffer can cause other
-    // windows to retroactively violate constraints.)
-    bool changed;
-    bool fimc_used;
-    do {
-        android::Vector<hwc_rect> rects;
-        android::Vector<hwc_rect> overlaps;
-        size_t pixels_left, windows_left;
 
-        fimc_used = false;
+    #if defined(BOARD_USES_HDMI)
+    android::SecHdmiClient *mHdmiClient = android::SecHdmiClient::getInstance();
+    mHdmiClient->setHdmiHwcLayer(pdev->num_of_hwc_layer);
+    #endif
 
-        if (fb_needed) {
-            hwc_rect_t fb_rect;
-            fb_rect.top = fb_rect.left = 0;
-            fb_rect.right = pdev->xres - 1;
-            fb_rect.bottom = pdev->yres - 1;
-            pixels_left = MAX_PIXELS - pdev->xres * pdev->yres;
-            windows_left = NUM_HW_WINDOWS - 1;
-            rects.push_back(fb_rect);
+    if (contents->numHwLayers < (pdev->num_of_fb_layer + pdev->num_of_hwc_layer))
+        ALOGD("%s:: numHwLayers %d num_of_fb_layer %d num_of_hwc_layer %d ",
+                __func__, contents->numHwLayers, pdev->num_of_fb_layer,
+                pdev->num_of_hwc_layer);
+
+    if (overlay_win_cnt < NUM_OF_WIN) {
+        //turn off the free windows
+        for (int i = overlay_win_cnt; i < NUM_OF_WIN; i++) {
+            window_hide(&pdev->win[i]);
+            reset_win_rect_info(&pdev->win[i]);
         }
-        else {
-            pixels_left = MAX_PIXELS;
-            windows_left = NUM_HW_WINDOWS;
-        }
-
-        changed = false;
-
-        for (size_t i = 0; i < contents->numHwLayers; i++) {
-            hwc_layer_1_t &layer = contents->hwLayers[i];
-            if ((layer.flags & HWC_SKIP_LAYER) ||
-                    layer.compositionType == HWC_FRAMEBUFFER_TARGET)
-                continue;
-
-            private_handle_t *handle = private_handle_t::dynamicCast(
-                    layer.handle);
-
-            // we've already accounted for the framebuffer above
-            if (layer.compositionType == HWC_FRAMEBUFFER)
-                continue;
-
-            // only layer 0 can be HWC_BACKGROUND, so we can
-            // unconditionally allow it without extra checks
-            if (layer.compositionType == HWC_BACKGROUND) {
-                windows_left--;
-                continue;
-            }
-
-            size_t pixels_needed = WIDTH(layer.displayFrame) *
-                    HEIGHT(layer.displayFrame);
-            bool can_compose = windows_left && pixels_needed <= pixels_left;
-            bool fimc_required = exynos4_requires_fimc(layer, handle->format);
-            if (fimc_required)
-                can_compose = can_compose && !fimc_used;
-
-            // hwc_rect_t right and bottom values are normally exclusive;
-            // the intersection logic is simpler if we make them inclusive
-            hwc_rect_t visible_rect = layer.displayFrame;
-            visible_rect.right--; visible_rect.bottom--;
-
-            // no more than 2 layers can overlap on a given pixel
-            for (size_t j = 0; can_compose && j < overlaps.size(); j++) {
-                if (intersect(visible_rect, overlaps.itemAt(j)))
-                    can_compose = false;
-            }
-
-            if (!can_compose) {
-                layer.compositionType = HWC_FRAMEBUFFER;
-                if (!fb_needed) {
-                    first_fb = last_fb = i;
-                    fb_needed = true;
-                }
-                else {
-                    first_fb = min(i, first_fb);
-                    last_fb = max(i, last_fb);
-                }
-                changed = true;
-                break;
-            }
-
-            for (size_t j = 0; j < rects.size(); j++) {
-                const hwc_rect_t &other_rect = rects.itemAt(j);
-                if (intersect(visible_rect, other_rect))
-                    overlaps.push_back(intersection(visible_rect, other_rect));
-            }
-            rects.push_back(visible_rect);
-            pixels_left -= pixels_needed;
-            windows_left--;
-            if (fimc_required)
-                fimc_used = true;
-        }
-
-        if (changed)
-            for (size_t i = first_fb; i < last_fb; i++)
-                contents->hwLayers[i].compositionType = HWC_FRAMEBUFFER;
-    } while(changed);
-
-    unsigned int nextWindow = 0;
-
-    for (size_t i = 0; i < contents->numHwLayers; i++) {
-        hwc_layer_1_t &layer = contents->hwLayers[i];
-
-        if (fb_needed && i == first_fb) {
-            ALOGV("assigning framebuffer to window %u\n",
-                    nextWindow);
-            nextWindow++;
-            continue;
-        }
-
-        if (layer.compositionType != HWC_FRAMEBUFFER &&
-                layer.compositionType != HWC_FRAMEBUFFER_TARGET) {
-            ALOGV("assigning layer %u to window %u", i, nextWindow);
-            pdev->bufs.overlay_map[nextWindow] = i;
-            if (layer.compositionType == HWC_OVERLAY) {
-                private_handle_t *handle =
-                        private_handle_t::dynamicCast(layer.handle);
-                if (exynos4_requires_fimc(layer, handle->format)) {
-                    ALOGV("\tusing fimc %u", AVAILABLE_FIMC_UNITS[FIMD_GSC_IDX]);
-                    pdev->bufs.fimc_map[nextWindow].mode =
-                            exynos4_fimc_map_t::FIMC_M2M;
-                    pdev->bufs.fimc_map[nextWindow].idx = FIMD_FIMC_IDX;
-                }
-            }
-            nextWindow++;
-        }
-    }
-
-    if (!fimc_used)
-        exynos4_cleanup_fimc_m2m(pdev, FIMD_FIMC_IDX);
-
-    if (fb_needed)
-        pdev->bufs.fb_window = first_fb;
-    else
-        pdev->bufs.fb_window = NO_FB_NEEDED;
-
-    return 0;
-}
-
-static int exynos4_prepare_hdmi(exynos4_hwc_composer_device_1_t *pdev,
-        hwc_display_contents_1_t* contents)
-{
-    ALOGV("preparing %u layers for HDMI", contents->numHwLayers);
-    hwc_layer_1_t *video_layer = NULL;
-
-    for (size_t i = 0; i < contents->numHwLayers; i++) {
-        hwc_layer_1_t &layer = contents->hwLayers[i];
-
-        if (layer.compositionType == HWC_FRAMEBUFFER_TARGET) {
-            ALOGV("\tlayer %u: framebuffer target", i);
-            continue;
-        }
-
-        if (layer.compositionType == HWC_BACKGROUND) {
-            ALOGV("\tlayer %u: background layer", i);
-            dump_layer(&layer);
-            continue;
-        }
-
-        if (layer.handle) {
-            private_handle_t *h = private_handle_t::dynamicCast(layer.handle);
-            if (h->flags & GRALLOC_USAGE_PROTECTED) {
-                if (!video_layer) {
-                    video_layer = &layer;
-                    layer.compositionType = HWC_OVERLAY;
-                    ALOGV("\tlayer %u: video layer", i);
-                    dump_layer(&layer);
-                    continue;
-                }
-            }
-        }
-
-        layer.compositionType = HWC_FRAMEBUFFER;
-        dump_layer(&layer);
     }
 
     return 0;
@@ -1238,399 +668,236 @@ static int exynos4_prepare(hwc_composer_device_1_t *dev,
     hwc_display_contents_1_t *fimd_contents = displays[HWC_DISPLAY_PRIMARY];
     hwc_display_contents_1_t *hdmi_contents = displays[HWC_DISPLAY_EXTERNAL];
 
-    if (pdev->hdmi_hpd) {
-        hdmi_enable(pdev);
-    } else {
-        hdmi_disable(pdev);
-    }
-
     if (fimd_contents) {
         int err = exynos4_prepare_fimd(pdev, fimd_contents);
         if (err)
             return err;
     }
 
-    if (hdmi_contents) {
-        int err = exynos4_prepare_hdmi(pdev, hdmi_contents);
-        if (err)
-            return err;
-    }
-
     return 0;
-}
-
-static int exynos4_config_fimc_m2m(hwc_layer_1_t &layer,
-        alloc_device_t* alloc_device, exynos4_fimc_data_t *fimc_data,
-        int fimc_idx, int dst_format, hwc_rect_t *sourceCrop)
-{
-    int i;
-    ALOGV("configuring fimc %u for memory-to-memory", AVAILABLE_FIMC_UNITS[fimc_idx]);
-
-    private_handle_t *src_handle = private_handle_t::dynamicCast(layer.handle);
-    buffer_handle_t dst_buf;
-    private_handle_t *dst_handle;
-    int ret = 0;
-    int uoffset = (GRALLOC_ALIGN(src_handle->stride, 16) * src_handle->vstride);
-    int voffset = uoffset + ((GRALLOC_ALIGN(src_handle->stride, 16) * src_handle->vstride) / 4);
-    exynos_fimc_img src_cfg, dst_cfg;
-    memset(&src_cfg, 0, sizeof(src_cfg));
-    memset(&dst_cfg, 0, sizeof(dst_cfg));
-
-    hwc_rect_t sourceCropTemp;
-    if (!sourceCrop)
-        sourceCrop = &sourceCropTemp;
-
-    src_cfg.x = layer.sourceCrop.left;
-    src_cfg.y = layer.sourceCrop.top;
-    src_cfg.w = WIDTH(layer.sourceCrop);
-    src_cfg.fw = src_handle->stride;
-    src_cfg.h = HEIGHT(layer.sourceCrop);
-    src_cfg.fh = src_handle->vstride;
-    src_cfg.yaddr = src_handle->base;
-
-    if (exynos4_format_is_ycrcb(src_handle->format)) {
-        src_cfg.uaddr = src_handle->base + voffset;
-        src_cfg.vaddr = src_handle->base + uoffset;
-    } else {
-        src_cfg.uaddr = src_handle->base + uoffset;
-        src_cfg.vaddr = src_handle->base + voffset;
-    }
-    src_cfg.format = src_handle->format;
-    src_cfg.drmMode = !!(src_handle->flags & GRALLOC_USAGE_PROTECTED);
-    src_cfg.acquireFenceFd = layer.acquireFenceFd;
-    layer.acquireFenceFd = -1;
-
-    dst_cfg.x = 0;
-    dst_cfg.y = 0;
-    dst_cfg.w = WIDTH(layer.displayFrame);
-    dst_cfg.h = HEIGHT(layer.displayFrame);
-    dst_cfg.rot = layer.transform;
-    dst_cfg.drmMode = src_cfg.drmMode;
-    dst_cfg.format = dst_format;
-    dst_cfg.narrowRgb = !exynos4_format_is_rgb(src_handle->format);
-    if (dst_cfg.drmMode)
-        align_crop_and_center(dst_cfg.w, dst_cfg.h, sourceCrop,
-                FIMC_DST_CROP_W_ALIGNMENT_RGB888);
-
-    ALOGV("source configuration:");
-    dump_fimc_img(src_cfg);
-
-    bool reconfigure = fimc_src_cfg_changed(src_cfg, fimc_data->src_cfg) ||
-            fimc_dst_cfg_changed(dst_cfg, fimc_data->dst_cfg);
-    if (reconfigure) {
-        int dst_stride;
-        int usage = GRALLOC_USAGE_SW_READ_NEVER |
-                GRALLOC_USAGE_SW_WRITE_NEVER |
-                GRALLOC_USAGE_HW_COMPOSER;
-
-        if (src_handle->flags & GRALLOC_USAGE_PROTECTED)
-            usage |= GRALLOC_USAGE_PROTECTED;
-
-        int w = ALIGN(dst_cfg.w, FIMC_DST_W_ALIGNMENT_RGB888);
-        int h = ALIGN(dst_cfg.h, FIMC_DST_H_ALIGNMENT_RGB888);
-
-        for (size_t i = 0; i < NUM_FIMC_DST_BUFS; i++) {
-            if (fimc_data->dst_buf[i]) {
-                alloc_device->free(alloc_device, fimc_data->dst_buf[i]);
-                fimc_data->dst_buf[i] = NULL;
-            }
-
-            if (fimc_data->dst_buf_fence[i] >= 0) {
-                close(fimc_data->dst_buf_fence[i]);
-                fimc_data->dst_buf_fence[i] = -1;
-            }
-
-            int ret = alloc_device->alloc(alloc_device, w, h,
-                    HAL_PIXEL_FORMAT_RGBX_8888, usage, &fimc_data->dst_buf[i],
-                    &dst_stride);
-            if (ret < 0) {
-                ALOGE("failed to allocate destination buffer: %s",
-                        strerror(-ret));
-                goto err_alloc;
-            }
-        }
-
-        fimc_data->current_buf = 0;
-    }
-
-    dst_buf = fimc_data->dst_buf[fimc_data->current_buf];
-    dst_handle = private_handle_t::dynamicCast(dst_buf);
-
-    dst_cfg.fw = dst_handle->stride;
-    dst_cfg.fh = dst_handle->vstride;
-    dst_cfg.yaddr = dst_handle->base;
-    dst_cfg.acquireFenceFd = fimc_data->dst_buf_fence[fimc_data->current_buf];
-    fimc_data->dst_buf_fence[fimc_data->current_buf] = -1;
-
-    ALOGV("destination configuration:");
-    dump_fimc_img(dst_cfg);
-
-    if ((int)dst_cfg.w != WIDTH(layer.displayFrame))
-        ALOGV("padding %u x %u output to %u x %u and cropping to {%u,%u,%u,%u}",
-                WIDTH(layer.displayFrame), HEIGHT(layer.displayFrame),
-                dst_cfg.w, dst_cfg.h, sourceCrop->left, sourceCrop->top,
-                sourceCrop->right, sourceCrop->bottom);
-
-    if (fimc_data->fimc) {
-        ALOGV("reusing open fimc %u", AVAILABLE_FIMC_UNITS[fimc_idx]);
-    } else {
-        ALOGV("opening fimc %u", AVAILABLE_FIMC_UNITS[fimc_idx]);
-        fimc_data->fimc = exynos_fimc_create_exclusive(
-                AVAILABLE_FIMC_UNITS[fimc_idx], FIMC_M2M_MODE, FIMC_DUMMY, src_cfg.drmMode);
-        if (!fimc_data->fimc) {
-            ALOGE("failed to create fimc handle");
-            ret = -1;
-            goto err_alloc;
-        }
-    }
-
-    if (reconfigure) {
-        ret = exynos_fimc_stop_exclusive(fimc_data->fimc);
-        if (ret < 0) {
-            ALOGE("failed to stop fimc %u", fimc_idx);
-            goto err_fimc_config;
-        }
-
-        ret = exynos_fimc_config_exclusive(fimc_data->fimc, &src_cfg, &dst_cfg);
-        if (ret < 0) {
-            ALOGE("failed to configure fimc %u", fimc_idx);
-            goto err_fimc_config;
-        }
-    }
-
-    ret = exynos_fimc_run_exclusive(fimc_data->fimc, &src_cfg, &dst_cfg);
-    if (ret < 0) {
-        ALOGE("failed to run fimc %u", fimc_idx);
-        goto err_fimc_config;
-    }
-
-    fimc_data->src_cfg = src_cfg;
-    fimc_data->dst_cfg = dst_cfg;
-
-    layer.releaseFenceFd = src_cfg.releaseFenceFd;
-
-    return 0;
-
-err_fimc_config:
-    exynos_fimc_destroy(fimc_data->fimc);
-    fimc_data->fimc = NULL;
-err_alloc:
-    if (src_cfg.acquireFenceFd >= 0)
-        close(src_cfg.acquireFenceFd);
-    for (size_t i = 0; i < NUM_FIMC_DST_BUFS; i++) {
-       if (fimc_data->dst_buf[i]) {
-           alloc_device->free(alloc_device, fimc_data->dst_buf[i]);
-           fimc_data->dst_buf[i] = NULL;
-       }
-       if (fimc_data->dst_buf_fence[i] >= 0) {
-           close(fimc_data->dst_buf_fence[i]);
-           fimc_data->dst_buf_fence[i] = -1;
-       }
-    }
-    memset(&fimc_data->src_cfg, 0, sizeof(fimc_data->src_cfg));
-    memset(&fimc_data->dst_cfg, 0, sizeof(fimc_data->dst_cfg));
-    return ret;
-}
-
-
-static void exynos4_cleanup_fimc_m2m(exynos4_hwc_composer_device_1_t *pdev,
-        size_t fimc_idx)
-{
-    exynos4_fimc_data_t &fimc_data = pdev->fimc[fimc_idx];
-    if (!fimc_data.fimc)
-        return;
-
-    ALOGV("closing fimc %u", AVAILABLE_FIMC_UNITS[fimc_idx]);
-
-    exynos_fimc_stop_exclusive(fimc_data.fimc);
-    exynos_fimc_destroy(fimc_data.fimc);
-    for (size_t i = 0; i < NUM_FIMC_DST_BUFS; i++) {
-        if (fimc_data.dst_buf[i])
-            pdev->alloc_device->free(pdev->alloc_device, fimc_data.dst_buf[i]);
-        if (fimc_data.dst_buf_fence[i] >= 0)
-            close(fimc_data.dst_buf_fence[i]);
-    }
-
-    memset(&fimc_data, 0, sizeof(fimc_data));
-    for (size_t i = 0; i < NUM_FIMC_DST_BUFS; i++)
-        fimc_data.dst_buf_fence[i] = -1;
-}
-
-static void exynos4_config_handle(private_handle_t *handle,
-        hwc_rect_t &sourceCrop, hwc_rect_t &displayFrame,
-        int32_t blending, int fence_fd, s3c_fb_win_config &cfg,
-        exynos4_hwc_composer_device_1_t *pdev)
-{
-    uint32_t x, y;
-    uint32_t w = WIDTH(displayFrame);
-    uint32_t h = HEIGHT(displayFrame);
-    uint8_t bpp = exynos4_format_to_bpp(handle->format);
-    uint32_t offset = (sourceCrop.top * handle->stride + sourceCrop.left) * bpp / 8;
-
-    if (displayFrame.left < 0) {
-        unsigned int crop = -displayFrame.left;
-        ALOGV("layer off left side of screen; cropping %u pixels from left edge",
-                crop);
-        x = 0;
-        w -= crop;
-        offset += crop * bpp / 8;
-    } else {
-        x = displayFrame.left;
-    }
-
-    if (displayFrame.right > pdev->xres) {
-        unsigned int crop = displayFrame.right - pdev->xres;
-        ALOGV("layer off right side of screen; cropping %u pixels from right edge",
-                crop);
-        w -= crop;
-    }
-
-    if (displayFrame.top < 0) {
-        unsigned int crop = -displayFrame.top;
-        ALOGV("layer off top side of screen; cropping %u pixels from top edge",
-                crop);
-        y = 0;
-        h -= crop;
-        offset += handle->stride * crop * bpp / 8;
-    } else {
-        y = displayFrame.top;
-    }
-
-    if (displayFrame.bottom > pdev->yres) {
-        int crop = displayFrame.bottom - pdev->yres;
-        ALOGV("layer off bottom side of screen; cropping %u pixels from bottom edge",
-                crop);
-        h -= crop;
-    }
-
-    cfg.state = cfg.S3C_FB_WIN_STATE_BUFFER;
-    cfg.fd = handle->share_fd;
-    cfg.x = x;
-    cfg.y = y;
-    cfg.w = w;
-    cfg.h = h;
-    cfg.format = exynos4_format_to_s3c_format(handle->format);
-    cfg.offset = offset;
-    cfg.stride = handle->stride * bpp / 8;
-    cfg.blending = exynos4_blending_to_s3c_blending(blending);
-    cfg.fence_fd = fence_fd;
-}
-
-static void exynos4_config_overlay(hwc_layer_1_t *layer, s3c_fb_win_config &cfg,
-        exynos4_hwc_composer_device_1_t *pdev)
-{
-    if (layer->compositionType == HWC_BACKGROUND) {
-        hwc_color_t color = layer->backgroundColor;
-        cfg.state = cfg.S3C_FB_WIN_STATE_COLOR;
-        cfg.color = (color.r << 16) | (color.g << 8) | color.b;
-        cfg.x = 0;
-        cfg.y = 0;
-        cfg.w = pdev->xres;
-        cfg.h = pdev->yres;
-        return;
-    }
-
-    private_handle_t *handle = private_handle_t::dynamicCast(layer->handle);
-    exynos4_config_handle(handle, layer->sourceCrop, layer->displayFrame,
-            layer->blending, layer->acquireFenceFd, cfg, pdev);
 }
 
 static int exynos4_post_fimd(exynos4_hwc_composer_device_1_t *pdev,
         hwc_display_contents_1_t* contents)
 {
-    exynos4_hwc_post_data_t *pdata = &pdev->bufs;
-    struct s3c_fb_win_config_data win_data;
-    struct s3c_fb_win_config *config = win_data.config;
+    int skipped_window_mask = 0;
+    hwc_layer_1_t* cur;
+    struct hwc_win_info_t   *win;
+    int ret = 0;
+    struct sec_img src_img;
+    struct sec_img dst_img;
+    struct sec_rect src_work_rect;
+    struct sec_rect dst_work_rect;
+    bool need_fb = pdev->num_of_fb_layer > 0;
+    hwc_layer_1_t *fb_layer = NULL;
 
-    memset(config, 0, sizeof(win_data.config));
-    for (size_t i = 0; i < NUM_HW_WINDOWS; i++)
-        config[i].fence_fd = -1;
+    memset(&src_img, 0, sizeof(src_img));
+    memset(&dst_img, 0, sizeof(dst_img));
+    memset(&src_work_rect, 0, sizeof(src_work_rect));
+    memset(&dst_work_rect, 0, sizeof(dst_work_rect));
 
-    for (size_t i = 0; i < NUM_HW_WINDOWS; i++) {
-        int layer_idx = pdata->overlay_map[i];
-        if (layer_idx != -1 && contents->hwLayers[layer_idx].handle) {
-            hwc_layer_1_t &layer = contents->hwLayers[layer_idx];
-            private_handle_t *handle =
-                    private_handle_t::dynamicCast(layer.handle);
+    #if defined(BOARD_USES_HDMI)
+    int skip_hdmi_rendering = 0;
+    int rotVal = 0;
+    #endif
 
-            if (pdata->fimc_map[i].mode == exynos4_fimc_map_t::FIMC_M2M) {
-                int fimc_idx = pdata->fimc_map[i].idx;
-                exynos4_fimc_data_t &fimc = pdev->fimc[fimc_idx];
+    if (!contents) {
+        //turn off the all windows
+        for (int i = 0; i < NUM_OF_WIN; i++) {
+            window_hide(&pdev->win[i]);
+            reset_win_rect_info(&pdev->win[i]);
+            pdev->win[i].status = HWC_WIN_FREE;
+        }
+        pdev->num_of_hwc_layer = 0;
+        ALOGE("%s: NULL contents!", __func__);
+        return -1;
+    }
 
-                // RGBX8888 surfaces are already in the right color order from the GPU,
-                // RGB565 and YUV surfaces need the FIMC to swap R & B
-                int dst_format = HAL_PIXEL_FORMAT_RGBA_8888;
-                if (exynos4_format_is_rgb(handle->format) &&
-                                handle->format != HAL_PIXEL_FORMAT_RGB_565)
-                    dst_format = HAL_PIXEL_FORMAT_RGBX_8888;
+    // if has framebuffer_target layer, post it
+    if(need_fb) {
+        for (size_t i = 0; i < contents->numHwLayers; i++) {
+            if (contents->hwLayers[i].compositionType == HWC_FRAMEBUFFER_TARGET) {
+                fb_layer = &contents->hwLayers[i];
+                break;
+            }
+        }
 
-                hwc_rect_t sourceCrop = { 0, 0,
-                        WIDTH(layer.displayFrame), HEIGHT(layer.displayFrame) };
-                int err = exynos4_config_fimc_m2m(layer, pdev->alloc_device, &fimc,
-                        fimc_idx, dst_format, &sourceCrop);
-                if (err < 0) {
-                    ALOGE("failed to configure fimc %u for layer %u",
-                            fimc_idx, i);
-                    pdata->fimc_map[i].mode = exynos4_fimc_map_t::FIMC_NONE;
+        if (fb_layer == NULL) {
+            ALOGE("framebuffer target expected, but not provided");
+            ret = -1;
+        } else {
+            ALOGV("framebuffer target buffer:");
+            dump_layer(fb_layer);
+            
+            pdev->fb_device->post(pdev->fb_device, fb_layer->handle);
+        }
+    }
+
+    if(pdev->num_of_hwc_layer > NUM_OF_WIN)
+        pdev->num_of_hwc_layer = NUM_OF_WIN;
+
+    //compose overlay layers here
+    for (int i = 0; i < pdev->num_of_hwc_layer - pdev->num_2d_blit_layer; i++) {
+        win = &pdev->win[i];
+        if (win->status == HWC_WIN_RESERVED) {
+            cur = &contents->hwLayers[win->layer_index];
+
+            if (cur->compositionType == HWC_OVERLAY) {
+                if (pdev->layer_prev_buf[i] == (uint32_t)cur->handle) {
+                    /*
+                     * In android platform, all the graphic buffer are at least
+                     * double buffered (2 or more) this buffer is already rendered.
+                     * It is the redundant src buffer for FIMC rendering.
+                     */
+                    ALOGV("%s:: Same buffer, no need to pan display!", __func__);
+                    #if defined(BOARD_USES_HDMI)
+                    skip_hdmi_rendering = 1;
+                    #endif
+                    continue;
+                }
+                pdev->layer_prev_buf[i] = (uint32_t)cur->handle;
+                // initialize the src & dist context for fimc
+                set_src_dst_img_rect(cur, win, &src_img, &dst_img,
+                                &src_work_rect, &dst_work_rect, i);
+
+                ALOGV("%s:: Overlay runFimc!", __func__);
+                ret = runFimc(pdev,
+                            &src_img, &src_work_rect,
+                            &dst_img, &dst_work_rect,
+                            cur->transform);
+
+                if (ret < 0) {
+                    ALOGE("%s::runFimc fail : ret=%d\n", __func__, ret);
+                    skipped_window_mask |= (1 << i);
                     continue;
                 }
 
-                buffer_handle_t dst_buf = fimc.dst_buf[fimc.current_buf];
-                private_handle_t *dst_handle =
-                        private_handle_t::dynamicCast(dst_buf);
-                int fence = fimc.dst_cfg.releaseFenceFd;
-                dst_handle->format = HAL_PIXEL_FORMAT_BGRA_8888;
-                exynos4_config_handle(dst_handle, sourceCrop,
-                        layer.displayFrame, layer.blending, fence, config[i],
-                        pdev);
+                window_pan_display(win);
+
+                win->buf_index = (win->buf_index + 1) % NUM_OF_WIN_BUF;
+                if (win->power_state == 0)
+                    window_show(win);
             } else {
-                exynos4_config_overlay(&layer, config[i], pdev);
+                ALOGE("%s:: error : layer %d compositionType should have been"
+                        " HWC_OVERLAY ", __func__, win->layer_index);
+                skipped_window_mask |= (1 << i);
+                continue;
+            }
+        } else {
+            ALOGE("%s:: error : window status should have "
+                    "been HWC_WIN_RESERVED by now... ", __func__);
+             skipped_window_mask |= (1 << i);
+             continue;
+        }
+    }
+
+    if (skipped_window_mask) {
+        //turn off the free windows
+        for (int i = 0; i < NUM_OF_WIN; i++) {
+            if (skipped_window_mask & (1 << i)) {
+                window_hide(&pdev->win[i]);
+                reset_win_rect_info(&pdev->win[i]);
             }
         }
-        if (i == 0 && config[i].blending != S3C_FB_BLENDING_NONE) {
-            ALOGV("blending not supported on window 0; forcing BLENDING_NONE");
-            config[i].blending = S3C_FB_BLENDING_NONE;
+    }
+
+#if defined(BOARD_USES_HDMI)
+        android::SecHdmiClient *mHdmiClient = android::SecHdmiClient::getInstance();
+    
+        if (skip_hdmi_rendering == 1)
+            return 0;
+    
+        if (contents == NULL) {
+            // Don't display unnecessary image
+            mHdmiClient->setHdmiEnable(0);
+            return 0;
+        } else {
+            mHdmiClient->setHdmiEnable(1);
         }
 
-        ALOGV("window %u configuration:", i);
-        dump_config(config[i]);
-    }
-
-    int ret = ioctl(pdev->fd, S3CFB_WIN_CONFIG, &win_data);
-    for (size_t i = 0; i < NUM_HW_WINDOWS; i++)
-        if (config[i].fence_fd != -1)
-            close(config[i].fence_fd);
-    if (ret < 0) {
-        ALOGE("ioctl S3CFB_WIN_CONFIG failed: %s", strerror(errno));
-        return ret;
-    }
-
-    memcpy(pdev->last_config, &win_data.config, sizeof(win_data.config));
-    memcpy(pdev->last_fimc_map, pdata->fimc_map, sizeof(pdata->fimc_map));
-    pdev->last_fb_window = pdata->fb_window;
-    for (size_t i = 0; i < NUM_HW_WINDOWS; i++) {
-        int layer_idx = pdata->overlay_map[i];
-        if (layer_idx != -1) {
-            hwc_layer_1_t &layer = contents->hwLayers[layer_idx];
-            pdev->last_handles[i] = layer.handle;
+#ifdef SUPPORT_AUTO_UI_ROTATE
+#if 0 //yqf, move to FramebufferNativeWindow
+        cur = &list->hwLayers[0];
+    //LOGE("%s, cur->tran:%d \n",__func__,cur->transform); //added yqf
+        if (cur->transform == HAL_TRANSFORM_ROT_90 )//added yqf for test
+            mHdmiClient->setHdmiRotate(90, ctx->num_of_hwc_layer);
+        else if(cur->transform == HAL_TRANSFORM_ROT_270)
+            mHdmiClient->setHdmiRotate(270, ctx->num_of_hwc_layer);
+        else if(cur->transform == HAL_TRANSFORM_ROT_180)  
+            mHdmiClient->setHdmiRotate(180, ctx->num_of_hwc_layer);
+        else /*if(cur->transform == HAL_TRANSFORM_ROT_0)*/
+        mHdmiClient->setHdmiRotate(0, ctx->num_of_hwc_layer);
+#endif
+#endif
+    
+    
+#if 1 //added yqf, for flip ops for TV flush with camera preview by front camera  on TC4
+     if (pdev->num_of_hwc_layer == 1) {
+        win = &pdev->win[0];
+        cur = &contents->hwLayers[win->layer_index];
+     LOGE("%s, cur->tran:%d \n",__func__,cur->transform); 
+        if ((cur->transform == HAL_TRANSFORM_FLIP_H) ||(cur->transform == (HAL_TRANSFORM_FLIP_H | HAL_TRANSFORM_ROT_90)) )
+            mHdmiClient->setHdmiFlip(1, pdev->num_of_hwc_layer); //hflip
+        else if((cur->transform == HAL_TRANSFORM_FLIP_V)||(cur->transform == (HAL_TRANSFORM_FLIP_V | HAL_TRANSFORM_ROT_90)) )
+            mHdmiClient->setHdmiFlip(2, pdev->num_of_hwc_layer); //vflip
+        else    
+        mHdmiClient->setHdmiFlip(0, pdev->num_of_hwc_layer); //none flip
+     }
+ #endif
+     
+        // To support S3D video playback (automatic TV mode change to 3D mode)
+        if (pdev->num_of_hwc_layer == 1) {
+            if (src_img.usage != prev_usage)
+                mHdmiClient->setHdmiResolution(DEFAULT_HDMI_RESOLUTION_VALUE);    // V4L2_STD_1080P_60
+    
+            if ((src_img.usage & GRALLOC_USAGE_PRIVATE_SBS_LR) ||
+                (src_img.usage & GRALLOC_USAGE_PRIVATE_SBS_RL))
+                mHdmiClient->setHdmiResolution(7209601);    // V4L2_STD_TVOUT_720P_60_SBS_HALF
+            else if ((src_img.usage & GRALLOC_USAGE_PRIVATE_TB_LR) ||
+                (src_img.usage & GRALLOC_USAGE_PRIVATE_TB_RL))
+                mHdmiClient->setHdmiResolution(1080924);    // V4L2_STD_TVOUT_1080P_24_TB
+    
+            prev_usage = src_img.usage;
+        } else {
+            if ((prev_usage & GRALLOC_USAGE_PRIVATE_SBS_LR) ||
+                (prev_usage & GRALLOC_USAGE_PRIVATE_SBS_RL) ||
+                (prev_usage & GRALLOC_USAGE_PRIVATE_TB_LR) ||
+                (prev_usage & GRALLOC_USAGE_PRIVATE_TB_RL))
+                mHdmiClient->setHdmiResolution(DEFAULT_HDMI_RESOLUTION_VALUE);    // V4L2_STD_1080P_60
+            prev_usage = 0;
         }
-    }
+    
+    //LOGI("num_of_hwc_layer:%d\n",pdev->num_of_hwc_layer); 
+        if (pdev->num_of_hwc_layer == 1) {
+            if ((src_img.format == HAL_PIXEL_FORMAT_CUSTOM_YCbCr_420_SP_TILED)||
+                    (src_img.format == HAL_PIXEL_FORMAT_CUSTOM_YCrCb_420_SP)) {
+                ADDRS * addr = (ADDRS *)(src_img.base);
+    
+                mHdmiClient->blit2Hdmi(src_img.w, src_img.h,
+                                        src_img.format,
+                                        (unsigned int)addr->addr_y, (unsigned int)addr->addr_cbcr, (unsigned int)addr->addr_cbcr,
+                                        0, 0,
+                                        android::SecHdmiClient::HDMI_MODE_VIDEO,
+                                        pdev->num_of_hwc_layer);
+            } else if ((src_img.format == HAL_PIXEL_FORMAT_YCbCr_420_SP) ||
+                        (src_img.format == HAL_PIXEL_FORMAT_YCrCb_420_SP) ||
+                        (src_img.format == HAL_PIXEL_FORMAT_YCbCr_420_P) ||
+                        (src_img.format == HAL_PIXEL_FORMAT_YV12)) {
+                mHdmiClient->blit2Hdmi(src_img.w, src_img.h,
+                                        src_img.format,
+                                        (unsigned int)pdev->fimc.params.src.buf_addr_phy_rgb_y,
+                                        (unsigned int)pdev->fimc.params.src.buf_addr_phy_cb,
+                                        (unsigned int)pdev->fimc.params.src.buf_addr_phy_cr,
+                                        0, 0,
+                                        android::SecHdmiClient::HDMI_MODE_VIDEO,
+                                        pdev->num_of_hwc_layer);
+            } else {
+                ALOGE("%s: Unsupported format = %d", __func__, src_img.format);
+            }
+        }
+#endif
 
-    return win_data.fence;
-}
-
-static int exynos4_clear_fimd(exynos4_hwc_composer_device_1_t *pdev)
-{
-    struct s3c_fb_win_config_data win_data;
-    memset(&win_data, 0, sizeof(win_data));
-
-    int ret = ioctl(pdev->fd, S3CFB_WIN_CONFIG, &win_data);
-  //  LOG_ALWAYS_FATAL_IF(ret < 0,
-  //          "ioctl S3CFB_WIN_CONFIG failed to clear screen: %s",
-  //          strerror(errno));
-    // the causes of an empty config failing are all unrecoverable
-
-    return win_data.fence;
+    return ret;
 }
 
 static int exynos4_set_fimd(exynos4_hwc_composer_device_1_t *pdev,
@@ -1639,145 +906,10 @@ static int exynos4_set_fimd(exynos4_hwc_composer_device_1_t *pdev,
     if (!contents->dpy || !contents->sur)
         return 0;
 
-    hwc_layer_1_t *fb_layer = NULL;
     int err = 0;
-
-    if (pdev->bufs.fb_window != NO_FB_NEEDED) {
-        for (size_t i = 0; i < contents->numHwLayers; i++) {
-            if (contents->hwLayers[i].compositionType ==
-                    HWC_FRAMEBUFFER_TARGET) {
-                pdev->bufs.overlay_map[pdev->bufs.fb_window] = i;
-                fb_layer = &contents->hwLayers[i];
-                break;
-            }
-        }
-
-        if (CC_UNLIKELY(!fb_layer)) {
-            ALOGE("framebuffer target expected, but not provided");
-            err = -EINVAL;
-        } else {
-            ALOGV("framebuffer target buffer:");
-            dump_layer(fb_layer);
-        }
-    }
-
-    int fence;
-    if (!err) {
-        fence = exynos4_post_fimd(pdev, contents);
-        if (fence < 0)
-            err = fence;
-    }
-
-    if (err)
-        fence = exynos4_clear_fimd(pdev);
-
-    for (size_t i = 0; i < NUM_HW_WINDOWS; i++) {
-        if (pdev->bufs.overlay_map[i] != -1) {
-            hwc_layer_1_t &layer =
-                    contents->hwLayers[pdev->bufs.overlay_map[i]];
-            int dup_fd = dup(fence);
-            if (dup_fd < 0)
-                ALOGW("release fence dup failed: %s", strerror(errno));
-            if (pdev->bufs.fimc_map[i].mode == exynos4_fimc_map_t::FIMC_M2M) {
-                int fimc_idx = pdev->bufs.fimc_map[i].idx;
-                exynos4_fimc_data_t &fimc = pdev->fimc[fimc_idx];
-                fimc.dst_buf_fence[fimc.current_buf] = dup_fd;
-                fimc.current_buf = (fimc.current_buf + 1) % NUM_FIMC_DST_BUFS;
-            } else {
-                layer.releaseFenceFd = dup_fd;
-            }
-        }
-    }
-    close(fence);
+    err = exynos4_post_fimd(pdev, contents);
 
     return err;
-}
-
-static int exynos4_set_hdmi(exynos4_hwc_composer_device_1_t *pdev,
-        hwc_display_contents_1_t* contents)
-{
-    hwc_layer_1_t *fb_layer = NULL;
-    hwc_layer_1_t *video_layer = NULL;
-
-    if (!pdev->hdmi_enabled) {
-        for (size_t i = 0; i < contents->numHwLayers; i++) {
-            hwc_layer_1_t &layer = contents->hwLayers[i];
-            if (layer.acquireFenceFd != -1) {
-                close(layer.acquireFenceFd);
-                layer.acquireFenceFd = -1;
-            }
-        }
-        return 0;
-    }
-
-    for (size_t i = 0; i < contents->numHwLayers; i++) {
-        hwc_layer_1_t &layer = contents->hwLayers[i];
-
-        if (layer.flags & HWC_SKIP_LAYER) {
-            ALOGV("HDMI skipping layer %d", i);
-            continue;
-        }
-
-        if (layer.compositionType == HWC_OVERLAY) {
-             if (!layer.handle)
-                continue;
-
-            ALOGV("HDMI video layer:");
-            dump_layer(&layer);
-#ifdef USE_MIXER_VP
-            private_handle_t *h = private_handle_t::dynamicCast(layer.handle);
-            hdmi_vp_output(pdev, pdev->hdmi_layers[0], layer, h, layer.acquireFenceFd,
-                                                             &layer.releaseFenceFd);
-            video_layer = &layer;
-#else
-            exynos4_fimc_data_t &fimc = pdev->fimc[HDMI_FIMC_IDX];
-            int ret = exynos4_config_fimc_m2m(layer, pdev->alloc_device, &fimc, 1,
-                                             HAL_PIXEL_FORMAT_RGBX_8888, NULL);
-            if (ret < 0) {
-                ALOGE("failed to configure fimc for video layer");
-                continue;
-            }
-
-            buffer_handle_t dst_buf = fimc.dst_buf[fimc.current_buf];
-            private_handle_t *h = private_handle_t::dynamicCast(dst_buf);
-
-            int acquireFenceFd = fimc.dst_cfg.releaseFenceFd;
-            int releaseFenceFd = -1;
-
-            hdmi_output(pdev, pdev->hdmi_layers[0], layer, h, acquireFenceFd,
-                                                             &releaseFenceFd);
-            video_layer = &layer;
-
-            fimc.dst_buf_fence[fimc.current_buf] = releaseFenceFd;
-            fimc.current_buf = (fimc.current_buf + 1) % NUM_FIMC_DST_BUFS;
-#endif
-        }
-
-        if (layer.compositionType == HWC_FRAMEBUFFER_TARGET) {
-            if (!layer.handle)
-                continue;
-
-            ALOGV("HDMI FB layer:");
-            dump_layer(&layer);
-
-            private_handle_t *h = private_handle_t::dynamicCast(layer.handle);
-            hdmi_output(pdev, pdev->hdmi_layers[1], layer, h, layer.acquireFenceFd,
-                                                             &layer.releaseFenceFd);
-            fb_layer = &layer;
-        }
-    }
-
-    if (!video_layer) {
-        hdmi_disable_layer(pdev, pdev->hdmi_layers[0]);
-#ifndef USE_MIXER_VP
-        exynos4_cleanup_fimc_m2m(pdev, HDMI_FIMC_IDX);
-#endif
-    }
-    if (!fb_layer)
-        hdmi_disable_layer(pdev, pdev->hdmi_layers[1]);
-
-
-    return 0;
 }
 
 static int exynos4_set(struct hwc_composer_device_1 *dev,
@@ -1789,14 +921,10 @@ static int exynos4_set(struct hwc_composer_device_1 *dev,
     exynos4_hwc_composer_device_1_t *pdev =
             (exynos4_hwc_composer_device_1_t *)dev;
     hwc_display_contents_1_t *fimd_contents = displays[HWC_DISPLAY_PRIMARY];
-    hwc_display_contents_1_t *hdmi_contents = displays[HWC_DISPLAY_EXTERNAL];
     int fimd_err = 0, hdmi_err = 0;
 
     if (fimd_contents)
         fimd_err = exynos4_set_fimd(pdev, fimd_contents);
-
-    if (hdmi_contents)
-        hdmi_err = exynos4_set_hdmi(pdev, hdmi_contents);
 
     if (fimd_err)
         return fimd_err;
@@ -1852,46 +980,6 @@ static int exynos4_eventControl(struct hwc_composer_device_1 *dev, int dpy,
     }
 
     return -EINVAL;
-}
-
-static void handle_hdmi_uevent(struct exynos4_hwc_composer_device_1_t *pdev,
-        const char *buff, int len)
-{
-    const char *s = buff;
-    s += strlen(s) + 1;
-
-    while (*s) {
-        if (!strncmp(s, "SWITCH_STATE=", strlen("SWITCH_STATE=")))
-            pdev->hdmi_hpd = atoi(s + strlen("SWITCH_STATE=")) == 1;
-
-        s += strlen(s) + 1;
-        if (s - buff >= len)
-            break;
-    }
-
-    if (pdev->hdmi_hpd) {
-        hdmi_display_edid_info(pdev);
-        if(hdmi_open(pdev)< 0)
-            return;
-        if (hdmi_get_config(pdev)) {
-            ALOGE("Error reading HDMI configuration");
-            pdev->hdmi_hpd = false;
-            hdmi_close(pdev);
-            return;
-        }
-
-        pdev->hdmi_blanked = false;
-    }
-
-    ALOGV("HDMI HPD changed to %s", pdev->hdmi_hpd ? "enabled" : "disabled");
-    if (pdev->hdmi_hpd)
-        ALOGI("HDMI Resolution changed to %dx%d", pdev->hdmi_h, pdev->hdmi_w);
-
-    /* hwc_dev->procs is set right after the device is opened, but there is
-     * still a race condition where a hotplug event might occur after the open
-     * but before the procs are registered. */
-    if (pdev->procs)
-        pdev->procs->hotplug(pdev->procs, HWC_DISPLAY_EXTERNAL, pdev->hdmi_hpd);
 }
 
 static void handle_vsync_event(struct exynos4_hwc_composer_device_1_t *pdev)
@@ -1951,13 +1039,6 @@ static void *hwc_vsync_thread(void *data)
                 handle_vsync_event(pdev);
             }
             else if (fds[1].revents & POLLIN) {
-                int len = uevent_next_event(uevent_desc,
-                        sizeof(uevent_desc) - 2);
-
-                bool hdmi = !strcmp(uevent_desc,
-                        "change@/devices/virtual/switch/hdmi");
-                if (hdmi)
-                    handle_hdmi_uevent(pdev, uevent_desc, len);
             }
         }
         else if (err == -1) {
@@ -1977,14 +1058,8 @@ static int exynos4_blank(struct hwc_composer_device_1 *dev, int disp, int blank)
 
     switch (disp) {
     case HWC_DISPLAY_PRIMARY: {
-        if (pdev->hdmi_hpd) {
-            if (blank && !pdev->hdmi_blanked)
-                hdmi_disable(pdev);
-            pdev->hdmi_blanked = !!blank;
-        }
-
         int fb_blank = blank ? FB_BLANK_POWERDOWN : FB_BLANK_UNBLANK;
-        int err = ioctl(pdev->fd, FBIOBLANK, fb_blank);
+        int err = 0; //ioctl(pdev->fd, FBIOBLANK, fb_blank);    //wjj closed until kernel 3.0 blank api is correct.
         if (err < 0) {
             if (errno == EBUSY)
                 ALOGI("%sblank ioctl failed (display already %sblanked)",
@@ -1998,11 +1073,6 @@ static int exynos4_blank(struct hwc_composer_device_1 *dev, int disp, int blank)
     }
 
     case HWC_DISPLAY_EXTERNAL:
-        if (pdev->hdmi_hpd) {
-            if (blank && !pdev->hdmi_blanked)
-                hdmi_disable(pdev);
-            pdev->hdmi_blanked = !!blank;
-        }
         break;
 
     default:
@@ -2023,14 +1093,7 @@ static void exynos4_dump(hwc_composer_device_1* dev, char *buff, int buff_len)
 
     android::String8 result;
 
-    result.appendFormat("  hdmi_enabled=%u\n", pdev->hdmi_enabled);
-    if (pdev->hdmi_enabled)
-        result.appendFormat("    w=%u, h=%u\n", pdev->hdmi_w, pdev->hdmi_h);
-    result.append(
-            "   type   |  handle  |  color   | blend | format |   position    |     size      | fimc \n"
-            "----------+----------|----------+-------+--------+---------------+---------------------\n");
-    //        8_______ | 8_______ | 8_______ | 5____ | 6_____ | [5____,5____] | [5____,5____] | 3__ \n"
-
+    /*
     for (size_t i = 0; i < NUM_HW_WINDOWS; i++) {
         struct s3c_fb_win_config &config = pdev->last_config[i];
         if (config.state == config.S3C_FB_WIN_STATE_DISABLED) {
@@ -2050,14 +1113,16 @@ static void exynos4_dump(hwc_composer_device_1* dev, char *buff, int buff_len)
             result.appendFormat(" | [%5d,%5d] | [%5u,%5u]", config.x, config.y,
                     config.w, config.h);
         }
+
         if (pdev->last_fimc_map[i].mode == exynos4_fimc_map_t::FIMC_NONE)
             result.appendFormat(" | %3s", "-");
         else
             result.appendFormat(" | %3d",
                     AVAILABLE_FIMC_UNITS[pdev->last_fimc_map[i].idx]);
+
         result.append("\n");
     }
-
+    */
     strlcpy(buff, result.string(), buff_len);
 }
 
@@ -2075,18 +1140,6 @@ static int exynos4_getDisplayConfigs(struct hwc_composer_device_1 *dev,
         *numConfigs = 1;
         return 0;
     } else if (disp == HWC_DISPLAY_EXTERNAL) {
-        if (!pdev->hdmi_hpd) {
-            return -EINVAL;
-        }
-
-        int err = hdmi_get_config(pdev);
-        if (err) {
-            return -EINVAL;
-        }
-
-        configs[0] = 0;
-        *numConfigs = 1;
-        return 0;
     }
 
     return -EINVAL;
@@ -2117,29 +1170,6 @@ static int32_t exynos4_fimd_attribute(struct exynos4_hwc_composer_device_1_t *pd
     }
 }
 
-static int32_t exynos4_hdmi_attribute(struct exynos4_hwc_composer_device_1_t *pdev,
-        const uint32_t attribute)
-{
-    switch(attribute) {
-    case HWC_DISPLAY_VSYNC_PERIOD:
-        return pdev->vsync_period;
-
-    case HWC_DISPLAY_WIDTH:
-        return pdev->hdmi_w;
-
-    case HWC_DISPLAY_HEIGHT:
-        return pdev->hdmi_h;
-
-    case HWC_DISPLAY_DPI_X:
-    case HWC_DISPLAY_DPI_Y:
-        return 0; // unknown
-
-    default:
-        ALOGE("unknown display attribute %u", attribute);
-        return -EINVAL;
-    }
-}
-
 static int exynos4_getDisplayAttributes(struct hwc_composer_device_1 *dev,
         int disp, uint32_t config, const uint32_t *attributes, int32_t *values)
 {
@@ -2147,10 +1177,11 @@ static int exynos4_getDisplayAttributes(struct hwc_composer_device_1 *dev,
                    (struct exynos4_hwc_composer_device_1_t *)dev;
 
     for (int i = 0; attributes[i] != HWC_DISPLAY_NO_ATTRIBUTE; i++) {
-        if (disp == HWC_DISPLAY_PRIMARY)
+        if (disp == HWC_DISPLAY_PRIMARY) {
             values[i] = exynos4_fimd_attribute(pdev, attributes[i]);
-        else if (disp == HWC_DISPLAY_EXTERNAL)
-            values[i] = exynos4_hdmi_attribute(pdev, attributes[i]);
+        }
+        else if (disp == HWC_DISPLAY_EXTERNAL) {
+        }
         else {
             ALOGE("unknown display type %u", disp);
             return -EINVAL;
@@ -2168,6 +1199,8 @@ static int exynos4_open(const struct hw_module_t *module, const char *name,
     int ret;
     int refreshRate;
     int sw_fd;
+    struct fb_var_screeninfo const* info;
+    struct hwc_win_info_t   *win;
 
     if (strcmp(name, HWC_HARDWARE_COMPOSER)) {
         return -EINVAL;
@@ -2191,73 +1224,38 @@ static int exynos4_open(const struct hw_module_t *module, const char *name,
         goto err_get_module;
     }
 
-    dev->fd = open("/dev/graphics/fb0", O_RDWR);
-    if (dev->fd < 0) {
-        ALOGE("failed to open framebuffer");
-        ret = dev->fd;
+    //open framebuffer in FIMD
+    if (framebuffer_open((const hw_module_t *)dev->gralloc_module, 
+            &dev->fb_device)) {
+        ALOGE("framebuffer_open failed");
+        ret = -EINVAL;
         goto err_open_fb;
     }
 
-    struct fb_var_screeninfo info;
-    if (ioctl(dev->fd, FBIOGET_VSCREENINFO, &info) == -1) {
-        ALOGE("FBIOGET_VSCREENINFO ioctl failed: %s", strerror(errno));
-        ret = -errno;
-        goto err_ioctl;
-    }
+    dev->fd = dev->gralloc_module->framebuffer->fd;
+    info = &(dev->gralloc_module->info);
+    refreshRate = dev->fb_device->fps;
 
-    refreshRate = 1000000000000LLU /
-        (
-         uint64_t( info.upper_margin + info.lower_margin + info.yres )
-         * ( info.left_margin  + info.right_margin + info.xres )
-         * info.pixclock
-        );
-
-    if (refreshRate == 0) {
-        ALOGW("invalid refresh rate, assuming 60 Hz");
-        refreshRate = 60;
-    }
-
-    dev->xres = info.xres;
-    dev->yres = info.yres;
-    dev->xdpi = 1000 * (info.xres * 25.4f) / info.width;
-    dev->ydpi = 1000 * (info.yres * 25.4f) / info.height;
+    dev->xres = dev->fb_device->width;
+    dev->yres = dev->fb_device->height;
+    dev->xdpi = 1000 * dev->fb_device->xdpi;
+    dev->ydpi = 1000 * dev->fb_device->ydpi;
     dev->vsync_period  = 1000000000 / refreshRate;
 
-    ALOGV("using\n"
+    ALOGI("using (fd=%d)\n"
           "xres         = %d px\n"
           "yres         = %d px\n"
           "width        = %d mm (%f dpi)\n"
           "height       = %d mm (%f dpi)\n"
           "refresh rate = %d Hz\n",
-          dev->xres, dev->yres, info.width, dev->xdpi / 1000.0,
-          info.height, dev->ydpi / 1000.0, refreshRate);
-
-    for (size_t i = 0; i < NUM_FIMC_UNITS; i++)
-        for (size_t j = 0; j < NUM_FIMC_DST_BUFS; j++)
-            dev->fimc[i].dst_buf_fence[j] = -1;
+          dev->fd, dev->xres, dev->yres, info->width, dev->xdpi / 1000.0,
+          info->height, dev->ydpi / 1000.0, refreshRate);
 
     dev->vsync_fd = open("/sys/devices/platform/exynos4-fb.0/vsync", O_RDONLY);
     if (dev->vsync_fd < 0) {
-        ALOGE("failed to open vsync attribute");
-        ret = dev->vsync_fd;
-        goto err_ioctl;
-    }
-
-    sw_fd = open("/sys/class/switch/hdmi/state", O_RDONLY);
-    if (sw_fd) {
-        char val;
-        if (read(sw_fd, &val, 1) == 1 && val == '1') {
-	    if(hdmi_open(dev) < 0)
-		goto err_vsync;
-            dev->hdmi_hpd = true;
-            hdmi_display_edid_info(dev);
-            if (hdmi_get_config(dev)) {
-                ALOGE("Error reading HDMI configuration");
-		hdmi_close(dev);
-                dev->hdmi_hpd = false;
-            }
-            EDIDClose();
-        }
+        ALOGI("failed to open vsync attribute, use SW vsync in HWComposer");
+        //ret = dev->vsync_fd;
+        //goto err_hdmi1;
     }
 
     dev->base.common.tag = HARDWARE_DEVICE_TAG;
@@ -2277,11 +1275,63 @@ static int exynos4_open(const struct hw_module_t *module, const char *name,
 
     *device = &dev->base.common;
 
-    ret = pthread_create(&dev->vsync_thread, NULL, hwc_vsync_thread, dev);
-    if (ret) {
-        ALOGE("failed to start vsync thread: %s", strerror(ret));
-        ret = -ret;
-        goto err_vsync;
+    //initializing
+    memset(&(dev->fimc), 0, sizeof(s5p_fimc_t));
+
+    /* open WIN0 & WIN1 here, WIN0 & WIN1 is overlay in FIMD */
+     for (int i = 0; i < NUM_OF_WIN; i++) {
+        if (window_open(&(dev->win[i]), i)  < 0) {
+            ALOGE("%s:: Failed to open window %d device ", __func__, i);
+             ret = -EINVAL;
+             goto err_open_overlay;
+        }
+     }
+
+    if (window_get_global_lcd_info(dev->win[0].fd, &dev->lcd_info) < 0) {
+        ALOGE("%s::window_get_global_lcd_info is failed : %s", __func__, strerror(errno));
+        ret = -EINVAL;
+        goto err_open_overlay;
+    }
+
+    /* initialize the window context */
+    for (int i = 0; i < NUM_OF_WIN; i++) {
+        win = &dev->win[i];
+        memcpy(&win->lcd_info, &dev->lcd_info, sizeof(struct fb_var_screeninfo));
+        memcpy(&win->var_info, &dev->lcd_info, sizeof(struct fb_var_screeninfo));
+
+        win->rect_info.x = 0;
+        win->rect_info.y = 0;
+        win->rect_info.w = win->var_info.xres;
+        win->rect_info.h = win->var_info.yres;
+
+       if (window_set_pos(win) < 0) {
+            ALOGE("%s::window_set_pos is failed : %s", __func__, strerror(errno));
+            ret = -EINVAL;
+            goto err_open_overlay;
+        }
+
+        if (window_get_info(win, i) < 0) {
+            ALOGE("%s::window_get_info is failed : %s",__func__, strerror(errno));
+            ret = -EINVAL;
+            goto err_open_overlay;
+        }
+
+    }
+
+    //create PP
+    if (createFimc(&dev->fimc) < 0) {
+        ALOGE("%s::creatFimc() fail", __func__);
+        ret = -EINVAL;
+        goto err_open_overlay;
+    }
+
+    if(dev->vsync_fd >= 0){
+        ret = pthread_create(&dev->vsync_thread, NULL, hwc_vsync_thread, dev);
+        if (ret) {
+            ALOGE("failed to start vsync thread: %s", strerror(ret));
+            ret = -ret;
+            goto err_vsync;
+        }
     }
 
     char value[PROPERTY_VALUE_MAX];
@@ -2291,13 +1341,29 @@ static int exynos4_open(const struct hw_module_t *module, const char *name,
     return 0;
 
 err_vsync:
-    close(dev->vsync_fd);
+    if(dev->vsync_fd >= 0)
+        close(dev->vsync_fd);
+    
+err_open_overlay:
+    if (destroyFimc(&dev->fimc) < 0)
+        ALOGE("%s::destroyFimc() fail", __func__);
+
+    for (int i = 0; i < NUM_OF_WIN; i++) {
+        if (window_close(&dev->win[i]) < 0)
+            ALOGE("%s::window_close() fail", __func__);
+    }
+
 err_ioctl:
-    close(dev->fd);
+    framebuffer_close(dev->fb_device);
+    if(dev->fd > 0) {
+        close(dev->fd);
+        dev->fd = 0;
+    }
 err_open_fb:
     gralloc_close(dev->alloc_device);
 err_get_module:
     free(dev);
+    
     return ret;
 }
 
@@ -2307,12 +1373,25 @@ static int exynos4_close(hw_device_t *device)
             (struct exynos4_hwc_composer_device_1_t *)device;
     pthread_kill(dev->vsync_thread, SIGTERM);
     pthread_join(dev->vsync_thread, NULL);
-    for (size_t i = 0; i < NUM_FIMC_UNITS; i++)
-        exynos4_cleanup_fimc_m2m(dev, i);
-    gralloc_close(dev->alloc_device);
-    close(dev->vsync_fd);
+    int i;
 
-    close(dev->fd);
+    if (destroyFimc(&dev->fimc) < 0) {
+        ALOGE("%s::destroyFimc fail", __func__);
+    }
+
+    for (i = 0; i < NUM_OF_WIN; i++) {
+        if (window_close(&dev->win[i]) < 0)
+            ALOGE("%s::window_close() fail", __func__);
+    }
+
+    framebuffer_close(dev->fb_device);
+    if(dev->fd > 0) {
+        close(dev->fd);
+        dev->fd = 0;
+    }
+    gralloc_close(dev->alloc_device);
+    if(dev->vsync_fd >= 0)
+        close(dev->vsync_fd);
     return 0;
 }
 

@@ -84,6 +84,13 @@ typedef struct _SEC_OMX_VIDEODEC_COMPONENT
     OMX_BOOL bFirstFrame;
     MFC_DEC_INPUT_BUFFER MFCDecInputBuffer[MFC_INPUT_BUFFER_NUM_MAX];
     OMX_U32  indexInputBuffer;
+
+    /* CSC handle */
+    OMX_PTR csc_handle;
+    OMX_U32 csc_set_format;
+
+    /* For DRM Play */
+    OMX_BOOL bDRMPlayerMode;
 } SEC_OMX_VIDEODEC_COMPONENT;
 
 

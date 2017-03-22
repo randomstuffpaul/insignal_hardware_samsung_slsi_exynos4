@@ -76,11 +76,6 @@ typedef struct _SEC_MPEG4_HANDLE
 
     /* SEC MFC Codec specific */
     SEC_MFC_MPEG4_HANDLE      hMFCMpeg4Handle;
-
-    /* CSC FIMC handle */
-#ifdef USE_CSC_FIMC
-    OMX_PTR hFIMCHandle;
-#endif
 } SEC_MPEG4_HANDLE;
 
 #ifdef __cplusplus

@@ -33,12 +33,13 @@
 
 
 #define OSCL_EXPORT_REF __attribute__((visibility("default")))
-#define MAX_COMPONENT_NUM       2
+#define MAX_COMPONENT_NUM       3
 #define MAX_COMPONENT_ROLE_NUM  1
 
 /* H.264 */
 #define SEC_OMX_COMPONENT_H264_DEC "OMX.SEC.AVC.Decoder"
 #define SEC_OMX_COMPONENT_H264_FP_DEC "OMX.SEC.FP.AVC.Decoder"
+#define SEC_OMX_COMPONENT_H264_DRM_DEC "OMX.SEC.AVC.Decoder.secure"
 #define SEC_OMX_COMPONENT_H264_DEC_ROLE "video_decoder.avc"
 
 

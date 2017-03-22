@@ -145,8 +145,13 @@ typedef struct _SEC_OMX_BASECOMPONENT
     OMX_ERRORTYPE (*sec_InputBufferReturn)(OMX_COMPONENTTYPE *pOMXComponent);
     OMX_ERRORTYPE (*sec_OutputBufferReturn)(OMX_COMPONENTTYPE *pOMXComponent);
 
-    int (*sec_checkInputFrame)(OMX_U8 *pInputStream, OMX_U32 buffSize, OMX_U32 flag, OMX_BOOL bPreviousFrameEOF, OMX_BOOL *pbEndOfFrame);
+    OMX_ERRORTYPE (*sec_allocSecureInputBuffer)(OMX_IN OMX_HANDLETYPE hComponent,
+                                                OMX_IN OMX_U32 nBufferSize,
+                                                OMX_INOUT OMX_PTR *pInputBuffer_physicalAddress);
+    OMX_ERRORTYPE (*sec_freeSecureInputBuffer)(OMX_IN OMX_HANDLETYPE hComponent,
+                                               OMX_INOUT OMX_PTR pInputBuffer_physicalAddress);
 
+    int (*sec_checkInputFrame)(OMX_U8 *pInputStream, OMX_U32 buffSize, OMX_U32 flag, OMX_BOOL bPreviousFrameEOF, OMX_BOOL *pbEndOfFrame);
 } SEC_OMX_BASECOMPONENT;
 
 OMX_ERRORTYPE SEC_OMX_GetParameter(

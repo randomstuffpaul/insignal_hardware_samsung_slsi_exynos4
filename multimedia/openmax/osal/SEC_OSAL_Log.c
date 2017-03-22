@@ -39,6 +39,9 @@ void _SEC_OSAL_Log(SEC_LOG_LEVEL logLevel, const char *tag, const char *msg, ...
     case SEC_LOG_TRACE:
         __android_log_vprint(ANDROID_LOG_DEBUG, tag, msg, argptr);
         break;
+    case SEC_LOG_INFO:
+        __android_log_vprint(ANDROID_LOG_INFO, tag, msg, argptr);
+        break;
     case SEC_LOG_WARNING:
         __android_log_vprint(ANDROID_LOG_WARN, tag, msg, argptr);
         break;

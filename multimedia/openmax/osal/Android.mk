@@ -24,10 +24,6 @@ ifeq ($(BOARD_USE_S3D_SUPPORT), true)
 LOCAL_CFLAGS += -DS3D_SUPPORT
 endif
 
-ifeq ($(BOARD_USE_CSC_FIMC), true)
-LOCAL_CFLAGS += -DUSE_CSC_FIMC
-endif
-
 LOCAL_STATIC_LIBRARIES :=
 LOCAL_SHARED_LIBRARIES := libcutils libutils \
 	libui \
@@ -41,6 +37,7 @@ LOCAL_C_INCLUDES := $(SEC_OMX_INC)/khronos \
 	$(SEC_OMX_TOP)/osal \
 	$(SEC_OMX_COMPONENT)/common \
 	$(SEC_OMX_COMPONENT)/video/dec \
-	$(TOP)/frameworks/native/include/media/hardware
+	  $(TOP)/frameworks/native/include/media/hardware 
+#        $(TOP)/frameworks/native/include/media/openmax 
 
 include $(BUILD_STATIC_LIBRARY)

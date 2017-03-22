@@ -26,8 +26,7 @@
 #include <sys/mman.h>
 
 #include <sys/poll.h>
-#include <linux/videodev2.h>
-#include "sec_utils_v4l2.h"
+#include "videodev2.h"
 
 #include "mfc_interface.h"
 #include "SsbSipMfcApi.h"
@@ -49,7 +48,7 @@
 #define MAX_STREAM_SIZE (2*1024*1024)
 
 static char *mfc_dev_name = SAMSUNG_MFC_DEV_NAME;
-static int mfc_dev_node = 9;
+static int mfc_dev_node = 7;
 
 static void getMFCName(char *devicename, int size)
 {
@@ -72,22 +71,22 @@ void *SsbSipMfcEncOpen(void)
     struct v4l2_capability cap;
 
     getMFCName(mfc_dev_name, 64);
-    ALOGI("[%s] dev name is %s\n",__func__,mfc_dev_name);
+    LOGI("[%s] dev name is %s\n",__func__,mfc_dev_name);
 
     if (access(mfc_dev_name, F_OK) != 0) {
-        ALOGE("[%s] MFC device node not exists",__func__);
+        LOGE("[%s] MFC device node not exists",__func__);
         return NULL;
     }
 
     hMFCOpen = open(mfc_dev_name, O_RDWR | O_NONBLOCK, 0);
     if (hMFCOpen < 0) {
-        ALOGE("[%s] Failed to open MFC device",__func__);
+        LOGE("[%s] Failed to open MFC device",__func__);
         return NULL;
     }
 
     pCTX = (_MFCLIB *)malloc(sizeof(_MFCLIB));
     if (pCTX == NULL) {
-        ALOGE("[%s] malloc failed.",__func__);
+        LOGE("[%s] malloc failed.",__func__);
         return NULL;
     }
     memset(pCTX, 0, sizeof(_MFCLIB));
@@ -97,28 +96,28 @@ void *SsbSipMfcEncOpen(void)
     memset(&cap, 0, sizeof(cap));
     ret = ioctl(pCTX->hMFC, VIDIOC_QUERYCAP, &cap);
     if (ret != 0) {
-        ALOGE("[%s] VIDIOC_QUERYCAP failed",__func__);
+        LOGE("[%s] VIDIOC_QUERYCAP failed",__func__);
         close(pCTX->hMFC);
         free(pCTX);
         return NULL;
     }
 
-    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE)) {
-        ALOGE("[%s] Device does not support capture",__func__);
+    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
+        LOGE("[%s] Device does not support capture",__func__);
         close(pCTX->hMFC);
         free(pCTX);
         return NULL;
     }
 
-    if (!(cap.capabilities & V4L2_CAP_VIDEO_OUTPUT_MPLANE)) {
-        ALOGE("[%s] Device does not support output",__func__);
+    if (!(cap.capabilities & V4L2_CAP_VIDEO_OUTPUT)) {
+        LOGE("[%s] Device does not support output",__func__);
         close(pCTX->hMFC);
         free(pCTX);
         return NULL;
     }
 
     if (!(cap.capabilities & V4L2_CAP_STREAMING)) {
-        ALOGE("[%s] Device does not support streaming",__func__);
+        LOGE("[%s] Device does not support streaming",__func__);
         close(pCTX->hMFC);
         free(pCTX);
         return NULL;
@@ -145,13 +144,13 @@ void *SsbSipMfcEncOpenExt(void *value)
         pCTX->cacheablebuffer = NO_CACHE;
         /* physical address is used for Input source */
         pCTX->v4l2_enc.bInputPhyVir = 1;
-        ALOGI("[%s] non cacheable buffer",__func__);
+        LOGI("[%s] non cacheable buffer",__func__);
     }
     else {
         pCTX->cacheablebuffer = CACHE;
         /* vitual address is used for Input source */
         pCTX->v4l2_enc.bInputPhyVir = 0;
-        ALOGI("[%s] cacheable buffer",__func__);
+        LOGI("[%s] cacheable buffer",__func__);
     }
 
     return (void *)pCTX;
@@ -163,7 +162,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncClose(void *openHandle)
     int i;
 
     if (openHandle == NULL) {
-        ALOGE("[%s] openHandle is NULL",__func__);
+        LOGE("[%s] openHandle is NULL",__func__);
         return MFC_RET_INVALID_PARAM;
     }
 
@@ -205,11 +204,10 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
     struct pollfd poll_events;
     int poll_state;
 
-    struct v4l2_ext_control ext_ctrl_mpeg4[23];
-    struct v4l2_ext_control ext_ctrl_h263[17];
-    struct v4l2_ext_control ext_ctrl[38];
+    struct v4l2_ext_control ext_ctrl_mpeg4[27];
+    struct v4l2_ext_control ext_ctrl_h263[19];
+    struct v4l2_ext_control ext_ctrl[44];
     struct v4l2_ext_controls ext_ctrls;
-    int pad_value = 0;
 
     SSBSIP_MFC_ENC_H264_PARAM *h264_arg;
     SSBSIP_MFC_ENC_MPEG4_PARAM *mpeg4_arg;
@@ -242,7 +240,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
                 pCTX->height = h264_arg->SourceHeight;
                 pCTX->framemap = h264_arg->FrameMap;
             } else {
-                ALOGE("[%s] Undefined codec type \n",__func__);
+                LOGE("[%s] Undefined codec type \n",__func__);
                 ret = MFC_RET_INVALID_PARAM;
                 goto error_case1;
             }
@@ -251,298 +249,303 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
 
     switch (pCTX->codecType) {
     case MPEG4_ENC:
-        ext_ctrl_mpeg4[0].id = V4L2_CID_MPEG_VIDEO_MPEG4_PROFILE;
+        ext_ctrl_mpeg4[0].id = V4L2_CID_CODEC_MFC5X_ENC_MPEG4_PROFILE;
         ext_ctrl_mpeg4[0].value = mpeg4_arg->ProfileIDC;
-        ext_ctrl_mpeg4[1].id = V4L2_CID_MPEG_VIDEO_MPEG4_LEVEL;
+        ext_ctrl_mpeg4[1].id = V4L2_CID_CODEC_MFC5X_ENC_MPEG4_LEVEL;
         ext_ctrl_mpeg4[1].value = mpeg4_arg->LevelIDC;
-        ext_ctrl_mpeg4[2].id = V4L2_CID_MPEG_VIDEO_GOP_SIZE;
+        ext_ctrl_mpeg4[2].id = V4L2_CID_CODEC_MFC5X_ENC_GOP_SIZE;
         ext_ctrl_mpeg4[2].value = mpeg4_arg->IDRPeriod;
-        ext_ctrl_mpeg4[3].id = V4L2_CID_MPEG_VIDEO_MPEG4_QPEL;
+        ext_ctrl_mpeg4[3].id = V4L2_CID_CODEC_MFC5X_ENC_MPEG4_QUARTER_PIXEL;
         ext_ctrl_mpeg4[3].value = mpeg4_arg->DisableQpelME;
 
-        ext_ctrl_mpeg4[4].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MODE;
+        ext_ctrl_mpeg4[4].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_MODE;
         ext_ctrl_mpeg4[4].value = mpeg4_arg->SliceMode; /* 0: one, 1: fixed #mb, 3: fixed #bytes */
         if (mpeg4_arg->SliceMode == 0) {
-            ext_ctrl_mpeg4[5].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MAX_MB;
+            ext_ctrl_mpeg4[5].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_MB;
             ext_ctrl_mpeg4[5].value = 1;  /* default */
-            ext_ctrl_mpeg4[6].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MAX_BYTES;
+            ext_ctrl_mpeg4[6].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_BIT;
             ext_ctrl_mpeg4[6].value = 1900; /* default */
         } else if (mpeg4_arg->SliceMode == 1) {
-            ext_ctrl_mpeg4[5].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MAX_MB;
+            ext_ctrl_mpeg4[5].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_MB;
             ext_ctrl_mpeg4[5].value = mpeg4_arg->SliceArgument;
-            ext_ctrl_mpeg4[6].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MAX_BYTES;
+            ext_ctrl_mpeg4[6].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_BIT;
             ext_ctrl_mpeg4[6].value = 1900; /* default */
         } else if (mpeg4_arg->SliceMode == 3) {
-            ext_ctrl_mpeg4[5].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MAX_MB;
+            ext_ctrl_mpeg4[5].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_MB;
             ext_ctrl_mpeg4[5].value = 1; /* default */
-            ext_ctrl_mpeg4[6].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MAX_BYTES;
+            ext_ctrl_mpeg4[6].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_BIT;
             ext_ctrl_mpeg4[6].value = mpeg4_arg->SliceArgument;
         }
         /*
         It should be set using mpeg4_arg->NumberBFrames after being handled by appl.
          */
-	ext_ctrl_mpeg4[7].id = V4L2_CID_MPEG_VIDEO_B_FRAMES;
+        ext_ctrl_mpeg4[7].id =  V4L2_CID_CODEC_MFC5X_ENC_MPEG4_B_FRAMES;
         ext_ctrl_mpeg4[7].value = mpeg4_arg->NumberBFrames;
-        ext_ctrl_mpeg4[8].id = V4L2_CID_MPEG_VIDEO_CYCLIC_INTRA_REFRESH_MB;
+        ext_ctrl_mpeg4[8].id = V4L2_CID_CODEC_MFC5X_ENC_INTRA_REFRESH_MB;
         ext_ctrl_mpeg4[8].value = mpeg4_arg->RandomIntraMBRefresh;
 
-        ext_ctrl_mpeg4[9].id = V4L2_CID_MPEG_MFC51_VIDEO_PADDING;
+        ext_ctrl_mpeg4[9].id = V4L2_CID_CODEC_MFC5X_ENC_PAD_CTRL_ENABLE;
         ext_ctrl_mpeg4[9].value = mpeg4_arg->PadControlOn;
+        ext_ctrl_mpeg4[10].id = V4L2_CID_CODEC_MFC5X_ENC_PAD_LUMA_VALUE;
+        ext_ctrl_mpeg4[10].value = mpeg4_arg->LumaPadVal;
+        ext_ctrl_mpeg4[11].id = V4L2_CID_CODEC_MFC5X_ENC_PAD_CB_VALUE;
+        ext_ctrl_mpeg4[11].value = mpeg4_arg->CbPadVal;
+        ext_ctrl_mpeg4[12].id = V4L2_CID_CODEC_MFC5X_ENC_PAD_CR_VALUE;
+        ext_ctrl_mpeg4[12].value = mpeg4_arg->CrPadVal;
 
-	/* TODO: Verify the padding values assignment */
-	pad_value |= mpeg4_arg->CrPadVal;
-	pad_value |= mpeg4_arg->CbPadVal << 8;
-	pad_value |= mpeg4_arg->LumaPadVal << 16;
-        ext_ctrl_mpeg4[10].id = V4L2_CID_MPEG_MFC51_VIDEO_PADDING_YUV;
-	ext_ctrl_mpeg4[10].value = pad_value;
+        ext_ctrl_mpeg4[13].id = V4L2_CID_CODEC_MFC5X_ENC_RC_FRAME_ENABLE;
+        ext_ctrl_mpeg4[13].value = mpeg4_arg->EnableFRMRateControl;
+        ext_ctrl_mpeg4[14].id = V4L2_CID_CODEC_MFC5X_ENC_MPEG4_VOP_TIME_RES;
+        ext_ctrl_mpeg4[14].value = mpeg4_arg->TimeIncreamentRes;
+        ext_ctrl_mpeg4[15].id = V4L2_CID_CODEC_MFC5X_ENC_MPEG4_VOP_FRM_DELTA;
+        ext_ctrl_mpeg4[15].value = mpeg4_arg->VopTimeIncreament;
+        ext_ctrl_mpeg4[16].id = V4L2_CID_CODEC_MFC5X_ENC_RC_BIT_RATE;
+        ext_ctrl_mpeg4[16].value = mpeg4_arg->Bitrate;
 
-        ext_ctrl_mpeg4[11].id = V4L2_CID_MPEG_VIDEO_FRAME_RC_ENABLE;
-        ext_ctrl_mpeg4[11].value = mpeg4_arg->EnableFRMRateControl;
-	ext_ctrl_mpeg4[12].id = V4L2_CID_MPEG_VIDEO_BITRATE;
-	ext_ctrl_mpeg4[12].value = mpeg4_arg->Bitrate;
+        ext_ctrl_mpeg4[17].id = V4L2_CID_CODEC_MFC5X_ENC_MPEG4_RC_FRAME_QP;
+        ext_ctrl_mpeg4[17].value = mpeg4_arg->FrameQp;
+        ext_ctrl_mpeg4[18].id =  V4L2_CID_CODEC_MFC5X_ENC_MPEG4_RC_P_FRAME_QP;
+        ext_ctrl_mpeg4[18].value = mpeg4_arg->FrameQp_P;
+        ext_ctrl_mpeg4[19].id =  V4L2_CID_CODEC_MFC5X_ENC_MPEG4_RC_B_FRAME_QP;
+        ext_ctrl_mpeg4[19].value = mpeg4_arg->FrameQp_B;
 
-        ext_ctrl_mpeg4[13].id = V4L2_CID_MPEG_VIDEO_MPEG4_I_FRAME_QP;
-        ext_ctrl_mpeg4[13].value = mpeg4_arg->FrameQp;
-        ext_ctrl_mpeg4[14].id =  V4L2_CID_MPEG_VIDEO_MPEG4_P_FRAME_QP;
-        ext_ctrl_mpeg4[14].value = mpeg4_arg->FrameQp_P;
-        ext_ctrl_mpeg4[15].id =  V4L2_CID_MPEG_VIDEO_MPEG4_B_FRAME_QP;
-        ext_ctrl_mpeg4[15].value = mpeg4_arg->FrameQp_B;
+        ext_ctrl_mpeg4[20].id =  V4L2_CID_CODEC_MFC5X_ENC_MPEG4_RC_MAX_QP;
+        ext_ctrl_mpeg4[20].value = mpeg4_arg->QSCodeMax;
+        ext_ctrl_mpeg4[21].id = V4L2_CID_CODEC_MFC5X_ENC_MPEG4_RC_MIN_QP;
+        ext_ctrl_mpeg4[21].value = mpeg4_arg->QSCodeMin;
+        ext_ctrl_mpeg4[22].id = V4L2_CID_CODEC_MFC5X_ENC_RC_REACTION_COEFF;
+        ext_ctrl_mpeg4[22].value = mpeg4_arg->CBRPeriodRf;
 
-        ext_ctrl_mpeg4[16].id =  V4L2_CID_MPEG_VIDEO_MPEG4_MAX_QP;
-        ext_ctrl_mpeg4[16].value = mpeg4_arg->QSCodeMax;
-        ext_ctrl_mpeg4[17].id = V4L2_CID_MPEG_VIDEO_MPEG4_MIN_QP;
-        ext_ctrl_mpeg4[17].value = mpeg4_arg->QSCodeMin;
-        ext_ctrl_mpeg4[18].id = V4L2_CID_MPEG_MFC51_VIDEO_RC_REACTION_COEFF;
-        ext_ctrl_mpeg4[18].value = mpeg4_arg->CBRPeriodRf;
-
-        if (V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_LEVEL_LIMIT == pCTX->enc_frameskip) {
-            ext_ctrl_mpeg4[19].id = V4L2_CID_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE;
-            ext_ctrl_mpeg4[19].value = V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_LEVEL_LIMIT;
-        } else if(V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_BUF_LIMIT == pCTX->enc_frameskip) {
-            ext_ctrl_mpeg4[19].id = V4L2_CID_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE;
-            ext_ctrl_mpeg4[19].value = V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_BUF_LIMIT;
+        if (V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_LEVEL == pCTX->enc_frameskip) {
+            ext_ctrl_mpeg4[23].id = V4L2_CID_CODEC_MFC5X_ENC_FRAME_SKIP_MODE;
+            ext_ctrl_mpeg4[23].value = V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_LEVEL;
+        } else if(V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_VBV_BUF_SIZE == pCTX->enc_frameskip) {
+            ext_ctrl_mpeg4[23].id = V4L2_CID_CODEC_MFC5X_ENC_FRAME_SKIP_MODE;
+            ext_ctrl_mpeg4[23].value = V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_VBV_BUF_SIZE;
         } else { /* ENC_FRAME_SKIP_MODE_DISABLE (default) */
-            ext_ctrl_mpeg4[19].id = V4L2_CID_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE;
-            ext_ctrl_mpeg4[19].value = V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_DISABLED;
+            ext_ctrl_mpeg4[23].id = V4L2_CID_CODEC_MFC5X_ENC_FRAME_SKIP_MODE;
+            ext_ctrl_mpeg4[23].value = V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_DISABLE;
         }
 
-        ext_ctrl_mpeg4[20].id = V4L2_CID_MPEG_VIDEO_VBV_SIZE;
-        ext_ctrl_mpeg4[20].value = 0;
+        ext_ctrl_mpeg4[24].id = V4L2_CID_CODEC_MFC5X_ENC_VBV_BUF_SIZE;
+        ext_ctrl_mpeg4[24].value = 0;
 
-        ext_ctrl_mpeg4[21].id = V4L2_CID_MPEG_VIDEO_HEADER_MODE;
-        ext_ctrl_mpeg4[21].value = 0;
+        ext_ctrl_mpeg4[25].id = V4L2_CID_CODEC_MFC5X_ENC_SEQ_HDR_MODE;
+        ext_ctrl_mpeg4[25].value = 0;
 
-        ext_ctrl_mpeg4[22].id = V4L2_CID_MPEG_MFC51_VIDEO_RC_FIXED_TARGET_BIT;
-        ext_ctrl_mpeg4[22].value = 1;
+        ext_ctrl_mpeg4[26].id = V4L2_CID_CODEC_MFC5X_ENC_RC_FIXED_TARGET_BIT;
+        ext_ctrl_mpeg4[26].value = V4L2_CODEC_MFC5X_ENC_SW_ENABLE;
         break;
 
     case H263_ENC:
-        ext_ctrl_h263[0].id = V4L2_CID_MPEG_VIDEO_GOP_SIZE;
+        ext_ctrl_h263[0].id = V4L2_CID_CODEC_MFC5X_ENC_GOP_SIZE;
         ext_ctrl_h263[0].value = h263_arg->IDRPeriod;
 
-        ext_ctrl_h263[1].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MODE;
+        ext_ctrl_h263[1].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_MODE;
         ext_ctrl_h263[1].value = h263_arg->SliceMode; /* 0: one, Check is needed if h264 support multi-slice */
 
-        ext_ctrl_h263[2].id = V4L2_CID_MPEG_VIDEO_CYCLIC_INTRA_REFRESH_MB;
+        ext_ctrl_h263[2].id = V4L2_CID_CODEC_MFC5X_ENC_INTRA_REFRESH_MB;
         ext_ctrl_h263[2].value = h263_arg->RandomIntraMBRefresh;
 
-        ext_ctrl_h263[3].id = V4L2_CID_MPEG_MFC51_VIDEO_PADDING;
+        ext_ctrl_h263[3].id = V4L2_CID_CODEC_MFC5X_ENC_PAD_CTRL_ENABLE;
         ext_ctrl_h263[3].value = h263_arg->PadControlOn;
+        ext_ctrl_h263[4].id = V4L2_CID_CODEC_MFC5X_ENC_PAD_LUMA_VALUE;
+        ext_ctrl_h263[4].value = h263_arg->LumaPadVal;
+        ext_ctrl_h263[5].id = V4L2_CID_CODEC_MFC5X_ENC_PAD_CB_VALUE;
+        ext_ctrl_h263[5].value = h263_arg->CbPadVal;
+        ext_ctrl_h263[6].id = V4L2_CID_CODEC_MFC5X_ENC_PAD_CR_VALUE;
+        ext_ctrl_h263[6].value = h263_arg->CrPadVal;
 
-	/* TODO: Verify the padding values assignment */
-        pad_value |= h263_arg->CrPadVal;
-        pad_value |= h263_arg->CbPadVal << 8;
-        pad_value |= h263_arg->LumaPadVal << 16;
-        ext_ctrl_h263[4].id = V4L2_CID_MPEG_MFC51_VIDEO_PADDING_YUV;
-        ext_ctrl_h263[4].value = pad_value;
+        ext_ctrl_h263[7].id = V4L2_CID_CODEC_MFC5X_ENC_RC_FRAME_ENABLE;
+        ext_ctrl_h263[7].value = h263_arg->EnableFRMRateControl;
 
-        ext_ctrl_h263[5].id = V4L2_CID_MPEG_VIDEO_FRAME_RC_ENABLE;
-        ext_ctrl_h263[5].value = h263_arg->EnableFRMRateControl;
+        ext_ctrl_h263[8].id = V4L2_CID_CODEC_MFC5X_ENC_H263_RC_FRAME_RATE;
+        ext_ctrl_h263[8].value = h263_arg->FrameRate;
 
-        ext_ctrl_h263[6].id = V4L2_CID_MPEG_VIDEO_BITRATE;
-        ext_ctrl_h263[6].value = h263_arg->Bitrate;
+        ext_ctrl_h263[9].id = V4L2_CID_CODEC_MFC5X_ENC_RC_BIT_RATE;
+        ext_ctrl_h263[9].value = h263_arg->Bitrate;
 
-        ext_ctrl_h263[7].id = V4L2_CID_MPEG_VIDEO_H263_I_FRAME_QP;
-        ext_ctrl_h263[7].value = h263_arg->FrameQp;
-        ext_ctrl_h263[8].id =  V4L2_CID_MPEG_VIDEO_H263_P_FRAME_QP;
-        ext_ctrl_h263[8].value = h263_arg->FrameQp_P;
+        ext_ctrl_h263[10].id = V4L2_CID_CODEC_MFC5X_ENC_H263_RC_FRAME_QP;
+        ext_ctrl_h263[10].value = h263_arg->FrameQp;
+        ext_ctrl_h263[11].id =  V4L2_CID_CODEC_MFC5X_ENC_H263_RC_P_FRAME_QP;
+        ext_ctrl_h263[11].value = h263_arg->FrameQp_P;
 
-        ext_ctrl_h263[9].id =  V4L2_CID_MPEG_VIDEO_H263_MAX_QP;
-        ext_ctrl_h263[9].value = h263_arg->QSCodeMax;
-        ext_ctrl_h263[10].id = V4L2_CID_MPEG_VIDEO_H263_MIN_QP;
-        ext_ctrl_h263[10].value = h263_arg->QSCodeMin;
-        ext_ctrl_h263[11].id = V4L2_CID_MPEG_MFC51_VIDEO_RC_REACTION_COEFF;
-        ext_ctrl_h263[11].value = h263_arg->CBRPeriodRf;
+        ext_ctrl_h263[12].id =  V4L2_CID_CODEC_MFC5X_ENC_H263_RC_MAX_QP;
+        ext_ctrl_h263[12].value = h263_arg->QSCodeMax;
+        ext_ctrl_h263[13].id = V4L2_CID_CODEC_MFC5X_ENC_H263_RC_MIN_QP;
+        ext_ctrl_h263[13].value = h263_arg->QSCodeMin;
+        ext_ctrl_h263[14].id = V4L2_CID_CODEC_MFC5X_ENC_RC_REACTION_COEFF;
+        ext_ctrl_h263[14].value = h263_arg->CBRPeriodRf;
 
-        if (V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_LEVEL_LIMIT == pCTX->enc_frameskip) {
-            ext_ctrl_h263[12].id = V4L2_CID_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE;
-            ext_ctrl_h263[12].value = V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_LEVEL_LIMIT;
-        } else if(V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_BUF_LIMIT == pCTX->enc_frameskip) {
-            ext_ctrl_h263[12].id = V4L2_CID_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE;
-            ext_ctrl_h263[12].value = V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_BUF_LIMIT;
+        if (V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_LEVEL == pCTX->enc_frameskip) {
+            ext_ctrl_h263[15].id = V4L2_CID_CODEC_MFC5X_ENC_FRAME_SKIP_MODE;
+            ext_ctrl_h263[15].value = V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_LEVEL;
+        } else if(V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_VBV_BUF_SIZE== pCTX->enc_frameskip) {
+            ext_ctrl_h263[15].id = V4L2_CID_CODEC_MFC5X_ENC_FRAME_SKIP_MODE;
+            ext_ctrl_h263[15].value = V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_VBV_BUF_SIZE;
         } else { /* ENC_FRAME_SKIP_MODE_DISABLE (default) */
-            ext_ctrl_h263[12].id = V4L2_CID_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE;
-            ext_ctrl_h263[12].value = V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_DISABLED;
+            ext_ctrl_h263[15].id = V4L2_CID_CODEC_MFC5X_ENC_FRAME_SKIP_MODE;
+            ext_ctrl_h263[15].value = V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_DISABLE;
         }
 
-        ext_ctrl_h263[13].id = V4L2_CID_MPEG_VIDEO_VBV_SIZE;
-        ext_ctrl_h263[13].value = 0;
+        ext_ctrl_h263[16].id = V4L2_CID_CODEC_MFC5X_ENC_VBV_BUF_SIZE;
+        ext_ctrl_h263[16].value = 0;
 
-        ext_ctrl_h263[14].id = V4L2_CID_MPEG_VIDEO_HEADER_MODE;
-        ext_ctrl_h263[14].value = 0;
+        ext_ctrl_h263[17].id = V4L2_CID_CODEC_MFC5X_ENC_SEQ_HDR_MODE;
+        ext_ctrl_h263[17].value = 0;
 
-        ext_ctrl_h263[15].id = V4L2_CID_MPEG_MFC51_VIDEO_RC_FIXED_TARGET_BIT;
-        ext_ctrl_h263[15].value = 1;
-
-	ext_ctrl_h263[16].id = V4L2_CID_MPEG_VIDEO_B_FRAMES;
-        ext_ctrl_h263[16].value = 2;
+        ext_ctrl_h263[18].id = V4L2_CID_CODEC_MFC5X_ENC_RC_FIXED_TARGET_BIT;
+        ext_ctrl_h263[18].value = V4L2_CODEC_MFC5X_ENC_SW_ENABLE;
         break;
 
     case H264_ENC:
-        ext_ctrl[0].id = V4L2_CID_MPEG_VIDEO_H264_PROFILE;
+        ext_ctrl[0].id = V4L2_CID_CODEC_MFC5X_ENC_H264_PROFILE;
         ext_ctrl[0].value = h264_arg->ProfileIDC;
-        ext_ctrl[1].id = V4L2_CID_MPEG_VIDEO_H264_LEVEL;
+        ext_ctrl[1].id = V4L2_CID_CODEC_MFC5X_ENC_H264_LEVEL;
         ext_ctrl[1].value = h264_arg->LevelIDC;
-        ext_ctrl[2].id = V4L2_CID_MPEG_VIDEO_GOP_SIZE;
+        ext_ctrl[2].id = V4L2_CID_CODEC_MFC5X_ENC_GOP_SIZE;
         ext_ctrl[2].value = h264_arg->IDRPeriod;
-        ext_ctrl[3].id = V4L2_CID_MPEG_MFC51_VIDEO_H264_NUM_REF_PIC_FOR_P;
-        ext_ctrl[3].value = h264_arg->NumberRefForPframes;
-        ext_ctrl[4].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MODE;
-        ext_ctrl[4].value = h264_arg->SliceMode;  /* 0: one, 1: fixed #mb, 3: fixed #bytes */
+        ext_ctrl[3].id = V4L2_CID_CODEC_MFC5X_ENC_H264_MAX_REF_PIC;
+        ext_ctrl[3].value = h264_arg->NumberReferenceFrames;
+        ext_ctrl[4].id = V4L2_CID_CODEC_MFC5X_ENC_H264_NUM_REF_PIC_4P;
+        ext_ctrl[4].value = h264_arg->NumberRefForPframes;
+        ext_ctrl[5].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_MODE;
+        ext_ctrl[5].value = h264_arg->SliceMode;  /* 0: one, 1: fixed #mb, 3: fixed #bytes */
         if (h264_arg->SliceMode == 0) {
-            ext_ctrl[5].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MAX_MB;
-            ext_ctrl[5].value = 1;  /* default */
-            ext_ctrl[6].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MAX_BYTES;
-            ext_ctrl[6].value = 1900; /* default */
+            ext_ctrl[6].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_MB;
+            ext_ctrl[6].value = 1;  /* default */
+            ext_ctrl[7].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_BIT;
+            ext_ctrl[7].value = 1900; /* default */
         } else if (h264_arg->SliceMode == 1) {
-            ext_ctrl[5].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MAX_MB;
-            ext_ctrl[5].value = h264_arg->SliceArgument;
-            ext_ctrl[6].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MAX_BYTES;
-            ext_ctrl[6].value = 1900; /* default */
-        } else if (h264_arg->SliceMode == 3) {
-            ext_ctrl[5].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MAX_MB;
-            ext_ctrl[5].value = 1; /* default */
-            ext_ctrl[6].id = V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MAX_BYTES;
+            ext_ctrl[6].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_MB;
             ext_ctrl[6].value = h264_arg->SliceArgument;
+            ext_ctrl[7].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_BIT;
+            ext_ctrl[7].value = 1900; /* default */
+        } else if (h264_arg->SliceMode == 3) {
+            ext_ctrl[6].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_MB;
+            ext_ctrl[6].value = 1; /* default */
+            ext_ctrl[7].id = V4L2_CID_CODEC_MFC5X_ENC_MULTI_SLICE_BIT;
+            ext_ctrl[7].value = h264_arg->SliceArgument;
         }
         /*
         It should be set using h264_arg->NumberBFrames after being handled by appl.
          */
-        ext_ctrl[7].id =  V4L2_CID_MPEG_VIDEO_B_FRAMES;
-        ext_ctrl[7].value = h264_arg->NumberBFrames;
-        ext_ctrl[8].id = V4L2_CID_MPEG_VIDEO_H264_LOOP_FILTER_MODE;
-        ext_ctrl[8].value = h264_arg->LoopFilterDisable;
-        ext_ctrl[9].id = V4L2_CID_MPEG_VIDEO_H264_LOOP_FILTER_ALPHA;
-        ext_ctrl[9].value = h264_arg->LoopFilterAlphaC0Offset;
-        ext_ctrl[10].id = V4L2_CID_MPEG_VIDEO_H264_LOOP_FILTER_BETA;
-        ext_ctrl[10].value = h264_arg->LoopFilterBetaOffset;
-        ext_ctrl[11].id = V4L2_CID_MPEG_VIDEO_H264_ENTROPY_MODE;
-        ext_ctrl[11].value = h264_arg->SymbolMode;
-
-        ext_ctrl[12].id = V4L2_CID_MPEG_VIDEO_H264_8X8_TRANSFORM;
-        ext_ctrl[12].value = h264_arg->Transform8x8Mode;
-        ext_ctrl[13].id = V4L2_CID_MPEG_VIDEO_CYCLIC_INTRA_REFRESH_MB;
-        ext_ctrl[13].value = h264_arg->RandomIntraMBRefresh;
-
-        ext_ctrl[14].id = V4L2_CID_MPEG_MFC51_VIDEO_PADDING;
-        ext_ctrl[14].value = h264_arg->PadControlOn;
-
-	pad_value |= h264_arg->CrPadVal;
-        pad_value |= h264_arg->CbPadVal << 8;
-        pad_value |= h264_arg->LumaPadVal << 16;
-        ext_ctrl[15].id = V4L2_CID_MPEG_MFC51_VIDEO_PADDING_YUV;
-        ext_ctrl[15].value = pad_value;
-
-        ext_ctrl[16].id = V4L2_CID_MPEG_VIDEO_FRAME_RC_ENABLE;
-        ext_ctrl[16].value = h264_arg->EnableFRMRateControl;
-        ext_ctrl[17].id = V4L2_CID_MPEG_VIDEO_MB_RC_ENABLE;
-        ext_ctrl[17].value = h264_arg->EnableMBRateControl;
-
-        ext_ctrl[18].id = V4L2_CID_MPEG_VIDEO_BITRATE;
+        ext_ctrl[8].id =  V4L2_CID_CODEC_MFC5X_ENC_H264_B_FRAMES;
+        ext_ctrl[8].value = h264_arg->NumberBFrames;
+        ext_ctrl[9].id = V4L2_CID_CODEC_MFC5X_ENC_H264_LOOP_FILTER_MODE;
+        ext_ctrl[9].value = h264_arg->LoopFilterDisable;
+        ext_ctrl[10].id = V4L2_CID_CODEC_MFC5X_ENC_H264_LOOP_FILTER_ALPHA;
+        ext_ctrl[10].value = h264_arg->LoopFilterAlphaC0Offset;
+        ext_ctrl[11].id = V4L2_CID_CODEC_MFC5X_ENC_H264_LOOP_FILTER_BETA;
+        ext_ctrl[11].value = h264_arg->LoopFilterBetaOffset;
+        ext_ctrl[12].id = V4L2_CID_CODEC_MFC5X_ENC_H264_ENTROPY_MODE;
+        ext_ctrl[12].value = h264_arg->SymbolMode;
+        ext_ctrl[13].id = V4L2_CID_CODEC_MFC5X_ENC_H264_INTERLACE;
+        ext_ctrl[13].value = h264_arg->PictureInterlace;
+        ext_ctrl[14].id = V4L2_CID_CODEC_MFC5X_ENC_H264_8X8_TRANSFORM;
+        ext_ctrl[14].value = h264_arg->Transform8x8Mode;
+        ext_ctrl[15].id = V4L2_CID_CODEC_MFC5X_ENC_INTRA_REFRESH_MB;
+        ext_ctrl[15].value = h264_arg->RandomIntraMBRefresh;
+        ext_ctrl[16].id = V4L2_CID_CODEC_MFC5X_ENC_PAD_CTRL_ENABLE;
+        ext_ctrl[16].value = h264_arg->PadControlOn;
+        ext_ctrl[17].id = V4L2_CID_CODEC_MFC5X_ENC_PAD_LUMA_VALUE;
+        ext_ctrl[17].value = h264_arg->LumaPadVal;
+        ext_ctrl[18].id = V4L2_CID_CODEC_MFC5X_ENC_PAD_CB_VALUE;
+        ext_ctrl[18].value = h264_arg->CbPadVal;
+        ext_ctrl[19].id = V4L2_CID_CODEC_MFC5X_ENC_PAD_CR_VALUE;
+        ext_ctrl[19].value = h264_arg->CrPadVal;
+        ext_ctrl[20].id = V4L2_CID_CODEC_MFC5X_ENC_RC_FRAME_ENABLE;
+        ext_ctrl[20].value = h264_arg->EnableFRMRateControl;
+        ext_ctrl[21].id = V4L2_CID_CODEC_MFC5X_ENC_H264_RC_MB_ENABLE;
+        ext_ctrl[21].value = h264_arg->EnableMBRateControl;
+        ext_ctrl[22].id = V4L2_CID_CODEC_MFC5X_ENC_H264_RC_FRAME_RATE;
+        ext_ctrl[22].value = h264_arg->FrameRate;
+        ext_ctrl[23].id = V4L2_CID_CODEC_MFC5X_ENC_RC_BIT_RATE;
         /* FIXME temporary fix */
         if (h264_arg->Bitrate)
-            ext_ctrl[18].value = h264_arg->Bitrate;
+            ext_ctrl[23].value = h264_arg->Bitrate;
         else
-            ext_ctrl[18].value = 1; /* just for testing Movi studio */
-
-        ext_ctrl[19].id = V4L2_CID_MPEG_VIDEO_H264_I_FRAME_QP;
-        ext_ctrl[19].value = h264_arg->FrameQp;
-        ext_ctrl[20].id =  V4L2_CID_MPEG_VIDEO_H264_P_FRAME_QP;
-        ext_ctrl[20].value = h264_arg->FrameQp_P;
-        ext_ctrl[21].id =  V4L2_CID_MPEG_VIDEO_H264_B_FRAME_QP;
-        ext_ctrl[21].value = h264_arg->FrameQp_B;
-        ext_ctrl[22].id =  V4L2_CID_MPEG_VIDEO_H264_MAX_QP;
-        ext_ctrl[22].value = h264_arg->QSCodeMax;
-        ext_ctrl[23].id = V4L2_CID_MPEG_VIDEO_H264_MIN_QP;
-        ext_ctrl[23].value = h264_arg->QSCodeMin;
-        ext_ctrl[24].id = V4L2_CID_MPEG_MFC51_VIDEO_RC_REACTION_COEFF;
-        ext_ctrl[24].value = h264_arg->CBRPeriodRf;
-        ext_ctrl[25].id =  V4L2_CID_MPEG_MFC51_VIDEO_H264_ADAPTIVE_RC_DARK;
-        ext_ctrl[25].value = h264_arg->DarkDisable;
-        ext_ctrl[26].id =  V4L2_CID_MPEG_MFC51_VIDEO_H264_ADAPTIVE_RC_SMOOTH;
-        ext_ctrl[26].value = h264_arg->SmoothDisable;
-        ext_ctrl[27].id =  V4L2_CID_MPEG_MFC51_VIDEO_H264_ADAPTIVE_RC_STATIC;
-        ext_ctrl[27].value = h264_arg->StaticDisable;
-        ext_ctrl[28].id =  V4L2_CID_MPEG_MFC51_VIDEO_H264_ADAPTIVE_RC_ACTIVITY;
-        ext_ctrl[28].value = h264_arg->ActivityDisable;
+            ext_ctrl[23].value = 1; /* just for testing Movi studio */
+        ext_ctrl[24].id = V4L2_CID_CODEC_MFC5X_ENC_H264_RC_FRAME_QP;
+        ext_ctrl[24].value = h264_arg->FrameQp;
+        ext_ctrl[25].id =  V4L2_CID_CODEC_MFC5X_ENC_H264_RC_P_FRAME_QP;
+        ext_ctrl[25].value = h264_arg->FrameQp_P;
+        ext_ctrl[26].id =  V4L2_CID_CODEC_MFC5X_ENC_H264_RC_B_FRAME_QP;
+        ext_ctrl[26].value = h264_arg->FrameQp_B;
+        ext_ctrl[27].id =  V4L2_CID_CODEC_MFC5X_ENC_H264_RC_MAX_QP;
+        ext_ctrl[27].value = h264_arg->QSCodeMax;
+        ext_ctrl[28].id = V4L2_CID_CODEC_MFC5X_ENC_H264_RC_MIN_QP;
+        ext_ctrl[28].value = h264_arg->QSCodeMin;
+        ext_ctrl[29].id = V4L2_CID_CODEC_MFC5X_ENC_RC_REACTION_COEFF;
+        ext_ctrl[29].value = h264_arg->CBRPeriodRf;
+        ext_ctrl[30].id =  V4L2_CID_CODEC_MFC5X_ENC_H264_RC_MB_DARK;
+        ext_ctrl[30].value = h264_arg->DarkDisable;
+        ext_ctrl[31].id =  V4L2_CID_CODEC_MFC5X_ENC_H264_RC_MB_SMOOTH;
+        ext_ctrl[31].value = h264_arg->SmoothDisable;
+        ext_ctrl[32].id =  V4L2_CID_CODEC_MFC5X_ENC_H264_RC_MB_STATIC;
+        ext_ctrl[32].value = h264_arg->StaticDisable;
+        ext_ctrl[33].id =  V4L2_CID_CODEC_MFC5X_ENC_H264_RC_MB_ACTIVITY;
+        ext_ctrl[33].value = h264_arg->ActivityDisable;
 
         /* doesn't have to be set */
-        ext_ctrl[29].id = V4L2_CID_MPEG_VIDEO_GOP_CLOSURE;
-        ext_ctrl[29].value = 0;
-        ext_ctrl[30].id = V4L2_CID_MPEG_VIDEO_H264_I_PERIOD;
-        ext_ctrl[30].value = 10;
+        ext_ctrl[34].id = V4L2_CID_CODEC_MFC5X_ENC_H264_OPEN_GOP;
+        ext_ctrl[34].value = V4L2_CODEC_MFC5X_ENC_SW_DISABLE;
+        ext_ctrl[35].id = V4L2_CID_CODEC_MFC5X_ENC_H264_I_PERIOD;
+        ext_ctrl[35].value = 10;
 
-        if (V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_LEVEL_LIMIT == pCTX->enc_frameskip) {
-            ext_ctrl[31].id = V4L2_CID_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE;
-            ext_ctrl[31].value = V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_LEVEL_LIMIT;
-        } else if(V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_BUF_LIMIT == pCTX->enc_frameskip) {
-            ext_ctrl[31].id = V4L2_CID_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE;
-            ext_ctrl[31].value = V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_BUF_LIMIT;
+        if (V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_LEVEL == pCTX->enc_frameskip) {
+            ext_ctrl[36].id = V4L2_CID_CODEC_MFC5X_ENC_FRAME_SKIP_MODE;
+            ext_ctrl[36].value = V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_LEVEL;
+        } else if(V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_VBV_BUF_SIZE== pCTX->enc_frameskip) {
+            ext_ctrl[36].id = V4L2_CID_CODEC_MFC5X_ENC_FRAME_SKIP_MODE;
+            ext_ctrl[36].value = V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_VBV_BUF_SIZE;
         } else { /* ENC_FRAME_SKIP_MODE_DISABLE (default) */
-            ext_ctrl[31].id = V4L2_CID_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE;
-            ext_ctrl[31].value = V4L2_MPEG_MFC51_VIDEO_FRAME_SKIP_MODE_DISABLED;
+            ext_ctrl[36].id = V4L2_CID_CODEC_MFC5X_ENC_FRAME_SKIP_MODE;
+            ext_ctrl[36].value = V4L2_CODEC_MFC5X_ENC_FRAME_SKIP_MODE_DISABLE;
         }
 
-        ext_ctrl[32].id = V4L2_CID_MPEG_VIDEO_HEADER_MODE;
-        ext_ctrl[32].value = 0; /* 0: seperated header
+        ext_ctrl[37].id = V4L2_CID_CODEC_MFC5X_ENC_VBV_BUF_SIZE;
+        ext_ctrl[37].value = 0;
+
+        ext_ctrl[38].id = V4L2_CID_CODEC_MFC5X_ENC_SEQ_HDR_MODE;
+        ext_ctrl[38].value = 0; /* 0: seperated header
                                               1: header + first frame */
 
-        ext_ctrl[33].id = V4L2_CID_MPEG_MFC51_VIDEO_RC_FIXED_TARGET_BIT;
-        ext_ctrl[33].value = 1;
+        ext_ctrl[39].id = V4L2_CID_CODEC_MFC5X_ENC_RC_FIXED_TARGET_BIT;
+        ext_ctrl[39].value = V4L2_CODEC_MFC5X_ENC_SW_ENABLE;
 
-        ext_ctrl[34].id =  V4L2_CID_MPEG_VIDEO_H264_VUI_SAR_ENABLE;
-        ext_ctrl[34].value = 0;
-        ext_ctrl[35].id = V4L2_CID_MPEG_VIDEO_H264_VUI_SAR_IDC;
-        ext_ctrl[35].value = 0;
-
-        ext_ctrl[36].id = V4L2_CID_MPEG_VIDEO_H264_VUI_EXT_SAR_WIDTH;
-        ext_ctrl[36].value = 0;
-        ext_ctrl[37].id =  V4L2_CID_MPEG_VIDEO_H264_VUI_EXT_SAR_HEIGHT;
-        ext_ctrl[37].value = 0;
+        ext_ctrl[40].id =  V4L2_CID_CODEC_MFC5X_ENC_H264_AR_VUI_ENABLE;
+        ext_ctrl[40].value = V4L2_CODEC_MFC5X_ENC_SW_DISABLE;
+        ext_ctrl[41].id = V4L2_CID_CODEC_MFC5X_ENC_H264_AR_VUI_IDC;
+        ext_ctrl[41].value = 0;
+        ext_ctrl[42].id = V4L2_CID_CODEC_MFC5X_ENC_H264_EXT_SAR_WIDTH;
+        ext_ctrl[42].value = 0;
+        ext_ctrl[43].id =  V4L2_CID_CODEC_MFC5X_ENC_H264_EXT_SAR_HEIGHT;
+        ext_ctrl[43].value = 0;
 
         break;
 
     default:
-        ALOGE("[%s] Undefined codec type",__func__);
+        LOGE("[%s] Undefined codec type",__func__);
         ret = MFC_RET_INVALID_PARAM;
         goto error_case1;
     }
 
-    ext_ctrls.ctrl_class = V4L2_CTRL_CLASS_MPEG;
+    ext_ctrls.ctrl_class = V4L2_CTRL_CLASS_CODEC;
     if (pCTX->codecType == MPEG4_ENC) {
-        ext_ctrls.count = 23;
+        ext_ctrls.count = 27;
         ext_ctrls.controls = ext_ctrl_mpeg4;
     } else if (pCTX->codecType == H264_ENC) {
-        ext_ctrls.count = 38;
+        ext_ctrls.count = 44;
         ext_ctrls.controls = ext_ctrl;
     } else if (pCTX->codecType == H263_ENC) {
-        ext_ctrls.count = 17;
+        ext_ctrls.count = 19;
         ext_ctrls.controls = ext_ctrl_h263;
     }
 
     ret = ioctl(pCTX->hMFC, VIDIOC_S_EXT_CTRLS, &ext_ctrls);
     if (ret != 0) {
-        ALOGE("[%s] Failed to set extended controls",__func__);
+        LOGE("[%s] Failed to set extended controls",__func__);
         ret = MFC_RET_ENC_INIT_FAIL;
         goto error_case1;
     }
@@ -572,7 +575,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
 
     ret = ioctl(pCTX->hMFC, VIDIOC_S_FMT, &fmt);
     if (ret != 0) {
-        ALOGE("[%s] S_FMT failed on MFC output stream",__func__);
+        LOGE("[%s] S_FMT failed on MFC output stream",__func__);
         ret = MFC_RET_ENC_INIT_FAIL;
         goto error_case1;
     }
@@ -591,7 +594,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
         fmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_H263;
         break;
     default:
-        ALOGE("[%s] Codec has not been recognised",__func__);
+        LOGE("[%s] Codec has not been recognised",__func__);
         return MFC_RET_ENC_INIT_FAIL;
     }
 
@@ -600,12 +603,11 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
 
     ret = ioctl(pCTX->hMFC, VIDIOC_S_FMT, &fmt);
     if (ret != 0) {
-        ALOGE("[%s] S_FMT failed on MFC output stream",__func__);
+        LOGE("[%s] S_FMT failed on MFC output stream",__func__);
         ret = MFC_RET_ENC_INIT_FAIL;
         goto error_case1;
     }
 
-#if 0
     /* cacheable buffer */
     ctrl.id = V4L2_CID_CACHEABLE;
     if (pCTX->cacheablebuffer == NO_CACHE)
@@ -615,11 +617,10 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
 
     ret = ioctl(pCTX->hMFC, VIDIOC_S_CTRL, &ctrl);
     if (ret != 0) {
-        ALOGE("[%s] VIDIOC_S_CTRL failed, V4L2_CID_CACHEABLE",__func__);
+        LOGE("[%s] VIDIOC_S_CTRL failed, V4L2_CID_CACHEABLE",__func__);
         ret = MFC_RET_ENC_INIT_FAIL;
         goto error_case1;
     }
-#endif
 
     /* Initialize streams for input */
     memset(&reqbuf, 0, sizeof(reqbuf));
@@ -632,7 +633,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
 
     ret = ioctl(pCTX->hMFC, VIDIOC_REQBUFS, &reqbuf);
     if (ret != 0) {
-        ALOGE("[%s] Reqbufs src ioctl failed",__func__);
+        LOGE("[%s] Reqbufs src ioctl failed",__func__);
         ret = MFC_RET_ENC_INIT_FAIL;
         goto error_case1;
     }
@@ -650,7 +651,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
 
             ret = ioctl(pCTX->hMFC, VIDIOC_QUERYBUF, &buf);
             if (ret != 0) {
-                ALOGE("[%s] Querybuf src ioctl failed",__func__);
+                LOGE("[%s] Querybuf src ioctl failed",__func__);
                 ret = MFC_RET_ENC_INIT_FAIL;
                 goto error_case2;
             }
@@ -658,14 +659,14 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
             pCTX->v4l2_enc.mfc_src_bufs_len[0] = buf.m.planes[0].length;
             pCTX->v4l2_enc.mfc_src_bufs_len[1] = buf.m.planes[1].length;
 
-            //pCTX->v4l2_enc.mfc_src_phys[i][0] = buf.m.planes[0].cookie;
-            //pCTX->v4l2_enc.mfc_src_phys[i][1] = buf.m.planes[1].cookie;
+            pCTX->v4l2_enc.mfc_src_phys[i][0] = buf.m.planes[0].cookie;
+            pCTX->v4l2_enc.mfc_src_phys[i][1] = buf.m.planes[1].cookie;
 
             pCTX->v4l2_enc.mfc_src_bufs[i][0] =
                 mmap(NULL, buf.m.planes[0].length, PROT_READ | PROT_WRITE,
                 MAP_SHARED, pCTX->hMFC, buf.m.planes[0].m.mem_offset);
             if (pCTX->v4l2_enc.mfc_src_bufs[i][0] == MAP_FAILED) {
-                ALOGE("[%s] Mmap on src buffer (0) failed",__func__);
+                LOGE("[%s] Mmap on src buffer (0) failed",__func__);
                 ret = MFC_RET_ENC_INIT_FAIL;
                 goto error_case2;
             }
@@ -675,13 +676,13 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
                 MAP_SHARED, pCTX->hMFC, buf.m.planes[1].m.mem_offset);
             if (pCTX->v4l2_enc.mfc_src_bufs[i][1] == MAP_FAILED) {
                 munmap(pCTX->v4l2_enc.mfc_src_bufs[i][0], pCTX->v4l2_enc.mfc_src_bufs_len[0]);
-                ALOGE("[%s] Mmap on src buffer (1) failed",__func__);
+                LOGE("[%s] Mmap on src buffer (1) failed",__func__);
                 ret = MFC_RET_ENC_INIT_FAIL;
                 goto error_case2;
             }
         }
     } else
-        ALOGV("[%s] Camera Phys src buf %d",__func__,reqbuf.count);
+        LOGV("[%s] Camera Phys src buf %d",__func__,reqbuf.count);
 
     for (i = 0; i<pCTX->v4l2_enc.mfc_num_src_bufs; i++)
         pCTX->v4l2_enc.mfc_src_buf_flags[i] = BUF_DEQUEUED;
@@ -700,7 +701,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
 
     ret = ioctl(pCTX->hMFC, VIDIOC_REQBUFS, &reqbuf);
     if (ret != 0) {
-        ALOGE("[%s] Reqbufs dst ioctl failed",__func__);
+        LOGE("[%s] Reqbufs dst ioctl failed",__func__);
         ret = MFC_RET_ENC_INIT_FAIL;
         goto error_case2;
     }
@@ -717,7 +718,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
 
         ret = ioctl(pCTX->hMFC, VIDIOC_QUERYBUF, &buf);
         if (ret != 0) {
-            ALOGE("[%s] Querybuf dst ioctl failed",__func__);
+            LOGE("[%s] Querybuf dst ioctl failed",__func__);
             ret = MFC_RET_ENC_INIT_FAIL;
             goto error_case3;
         }
@@ -727,14 +728,14 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
                 mmap(NULL, buf.m.planes[0].length, PROT_READ | PROT_WRITE,
                 MAP_SHARED, pCTX->hMFC, buf.m.planes[0].m.mem_offset);
         if (pCTX->v4l2_enc.mfc_dst_bufs[i] == MAP_FAILED) {
-            ALOGE("[%s] Mmap on dst buffer failed",__func__);
+            LOGE("[%s] Mmap on dst buffer failed",__func__);
             ret = MFC_RET_ENC_INIT_FAIL;
             goto error_case3;
         }
 
         ret = ioctl(pCTX->hMFC, VIDIOC_QBUF, &buf);
         if (ret != 0) {
-            ALOGE("[%s] VIDIOC_QBUF failed, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE",__func__);
+            LOGE("[%s] VIDIOC_QBUF failed, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE",__func__);
             ret = MFC_RET_ENC_INIT_FAIL;
             goto error_case3;
         }
@@ -747,7 +748,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
 
     ret = ioctl(pCTX->hMFC, VIDIOC_STREAMON, &type);
     if (ret != 0) {
-        ALOGE("[%s] V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, VIDIOC_STREAMON failed",__func__);
+        LOGE("[%s] V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, VIDIOC_STREAMON failed",__func__);
         ret = MFC_RET_ENC_INIT_FAIL;
         goto error_case3;
     }
@@ -772,11 +773,11 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
                 if (ret == 0)
                     break;
             } else if(poll_events.revents & POLLERR) { /*POLLERR */
-                ALOGE("[%s] POLLERR\n",__func__);
+                LOGE("[%s] POLLERR\n",__func__);
                 ret = MFC_RET_ENC_INIT_FAIL;
                 goto error_case3;
             } else {
-                ALOGE("[%s] poll() returns 0x%x\n",__func__, poll_events.revents);
+                LOGE("[%s] poll() returns 0x%x\n",__func__, poll_events.revents);
                 ret = MFC_RET_ENC_INIT_FAIL;
                 goto error_case3;
             }
@@ -800,11 +801,11 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncInit(void *openHandle, void *param)
 
     ret = ioctl(pCTX->hMFC, VIDIOC_QBUF, &buf);
     if (ret != 0) {
-        ALOGE("[%s] VIDIOC_QBUF failed, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE",__func__);
+        LOGE("[%s] VIDIOC_QBUF failed, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE",__func__);
         ret = MFC_RET_ENC_INIT_FAIL;
         goto error_case3;
     }
-    ALOGV("[%s] Strm out idx %d",__func__,index);
+    LOGV("[%s] Strm out idx %d",__func__,index);
 
     return MFC_RET_OK;
 error_case3:
@@ -829,7 +830,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncGetInBuf(void *openHandle, SSBSIP_MFC_ENC_INPU
     int i;
 
     if (openHandle == NULL) {
-        ALOGE("[%s] openHandle is NULL\n",__func__);
+        LOGE("[%s] openHandle is NULL\n",__func__);
         return MFC_RET_INVALID_PARAM;
     }
 
@@ -856,7 +857,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncGetInBuf(void *openHandle, SSBSIP_MFC_ENC_INPU
                 break;
 
         if (i == pCTX->v4l2_enc.mfc_num_src_bufs) {
-            ALOGV("[%s] No buffer is available.",__func__);
+            LOGV("[%s] No buffer is available.",__func__);
             return MFC_RET_ENC_GET_INBUF_FAIL;
         } else {
             /* FIXME check this for correct physical address */
@@ -870,7 +871,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncGetInBuf(void *openHandle, SSBSIP_MFC_ENC_INPU
             pCTX->v4l2_enc.mfc_src_buf_flags[i] = BUF_ENQUEUED;
         }
     }
-    ALOGV("[%s] Input Buffer idx %d",__func__,i);
+    LOGV("[%s] Input Buffer idx %d",__func__,i);
     return MFC_RET_OK;
 }
 
@@ -883,7 +884,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncSetInBuf(void *openHandle, SSBSIP_MFC_ENC_INPU
     int ret,i;
 
     if (openHandle == NULL) {
-        ALOGE("[%s] openHandle is NULL\n",__func__);
+        LOGE("[%s] openHandle is NULL\n",__func__);
         return MFC_RET_INVALID_PARAM;
     }
 
@@ -905,14 +906,14 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncSetInBuf(void *openHandle, SSBSIP_MFC_ENC_INPU
         MFC dqbuf() */
         pCTX->v4l2_enc.beingUsedIndex++;
         pCTX->v4l2_enc.beingUsedIndex %= MFC_ENC_NUM_SRC_BUFS;
-        ALOGV("[%s] Phy Input Buffer idx Queued %d",__func__,pCTX->v4l2_enc.beingUsedIndex);
+        LOGV("[%s] Phy Input Buffer idx Queued %d",__func__,pCTX->v4l2_enc.beingUsedIndex);
     } else {
         for (i = 0; i < pCTX->v4l2_enc.mfc_num_src_bufs; i++)
             if (pCTX->v4l2_enc.mfc_src_bufs[i][0] == input_info->YVirAddr)
                 break;
 
         if (i == pCTX->v4l2_enc.mfc_num_src_bufs) {
-            ALOGE("[%s] Can not use the buffer",__func__);
+            LOGE("[%s] Can not use the buffer",__func__);
             return MFC_RET_INVALID_PARAM;
         } else {
             pCTX->v4l2_enc.beingUsedIndex = i;
@@ -922,7 +923,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncSetInBuf(void *openHandle, SSBSIP_MFC_ENC_INPU
         qbuf.index = pCTX->v4l2_enc.beingUsedIndex;
         planes[0].bytesused = pCTX->width * pCTX->height;
         planes[1].bytesused = (pCTX->width * pCTX->height) >> 1;
-        ALOGV("[%s] Input Buffer idx Queued %d",__func__,pCTX->v4l2_enc.beingUsedIndex);
+        LOGV("[%s] Input Buffer idx Queued %d",__func__,pCTX->v4l2_enc.beingUsedIndex);
     }
 
     qbuf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
@@ -931,7 +932,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncSetInBuf(void *openHandle, SSBSIP_MFC_ENC_INPU
 
     ret = ioctl(pCTX->hMFC, VIDIOC_QBUF, &qbuf);
     if (ret != 0) {
-        ALOGE("[%s] VIDIOC_QBUF failed, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE",__func__);
+        LOGE("[%s] VIDIOC_QBUF failed, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE",__func__);
         return MFC_RET_ENC_SET_INBUF_FAIL;
     }
 
@@ -943,7 +944,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncGetOutBuf(void *openHandle, SSBSIP_MFC_ENC_OUT
     _MFCLIB *pCTX;
 
     if (openHandle == NULL) {
-        ALOGE("[%s] openHandle is NULL\n",__func__);
+        LOGE("[%s] openHandle is NULL\n",__func__);
         return MFC_RET_INVALID_PARAM;
     }
 
@@ -969,7 +970,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncGetOutBuf(void *openHandle, SSBSIP_MFC_ENC_OUT
 SSBSIP_MFC_ERROR_CODE SsbSipMfcEncSetOutBuf(void *openHandle, void *phyOutbuf, void *virOutbuf, int outputBufferSize)
 {
     if (openHandle == NULL) {
-        ALOGE("[%s] openHandle is NULL\n",__func__);
+        LOGE("[%s] openHandle is NULL\n",__func__);
         return MFC_RET_INVALID_PARAM;
     }
 
@@ -992,9 +993,9 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncExe(void *openHandle)
     struct pollfd poll_events;
     int poll_state;
 
-    ALOGV("[%s] Enter \n",__func__);
+    LOGV("[%s] Enter \n",__func__);
     if (openHandle == NULL) {
-        ALOGE("[%s] openHandle is NULL\n",__func__);
+        LOGE("[%s] openHandle is NULL\n",__func__);
         return MFC_RET_INVALID_PARAM;
     }
 
@@ -1005,7 +1006,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncExe(void *openHandle)
 
     ret = ioctl(pCTX->hMFC, VIDIOC_S_CTRL, &ctrl);
     if (ret != 0) {
-        ALOGE("[%s] VIDIOC_S_CTRL failed, V4L2_CID_CODEC_FRAME_TAG",__func__);
+        LOGE("[%s] VIDIOC_S_CTRL failed, V4L2_CID_CODEC_FRAME_TAG",__func__);
         return MFC_RET_ENC_EXE_ERR;
     }
 
@@ -1013,7 +1014,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncExe(void *openHandle)
         type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
         ret = ioctl(pCTX->hMFC, VIDIOC_STREAMON, &type);
         if (ret != 0) {
-            ALOGE("[%s] VIDIOC_STREAMON failed, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE",__func__);
+            LOGE("[%s] VIDIOC_STREAMON failed, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE",__func__);
             return MFC_RET_ENC_EXE_ERR;
         }
 
@@ -1040,14 +1041,14 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncExe(void *openHandle)
                 if (ret == 0)
                     break;
             } else if (poll_events.revents & POLLERR) { /* POLLERR */
-                ALOGE("[%s] POLLERR\n",__func__);
+                LOGE("[%s] POLLERR\n",__func__);
                 return MFC_RET_ENC_EXE_ERR;
             } else {
-                ALOGE("[%s] poll() returns 0x%x\n",__func__, poll_events.revents);
+                LOGE("[%s] poll() returns 0x%x\n",__func__, poll_events.revents);
                 return MFC_RET_ENC_EXE_ERR;
             }
         } else if (0 > poll_state) {
-            ALOGE("[%s] poll() Encoder POLL Timeout 0x%x\n",__func__, poll_events.revents);
+            LOGE("[%s] poll() Encoder POLL Timeout 0x%x\n",__func__, poll_events.revents);
             return MFC_RET_ENC_EXE_ERR;
         }
         loopcnt++;
@@ -1056,7 +1057,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncExe(void *openHandle)
     if (pCTX->v4l2_enc.bRunning != 0) {
         pCTX->encodedframeType = (qbuf.flags & 0x18) >> 3; /* encoded frame type */
 
-        ALOGV("[%s] encoded frame type = %d\n",__func__, pCTX->encodedframeType);
+        LOGV("[%s] encoded frame type = %d\n",__func__, pCTX->encodedframeType);
         switch (pCTX->encodedframeType) {
         case 1:
             pCTX->encodedframeType = MFC_FRAME_TYPE_I_FRAME;
@@ -1068,7 +1069,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncExe(void *openHandle)
             pCTX->encodedframeType = MFC_FRAME_TYPE_B_FRAME;
             break;
         default:
-             ALOGE("[%s] VIDIOC_DQBUF failed, encoded frame type is wrong",__func__);
+             LOGE("[%s] VIDIOC_DQBUF failed, encoded frame type is wrong",__func__);
         }
     }
 
@@ -1083,7 +1084,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncExe(void *openHandle)
 
     ret = ioctl(pCTX->hMFC, VIDIOC_G_CTRL, &ctrl);
     if (ret != 0) {
-        ALOGE("[%s] VIDIOC_G_CTRL failed, V4L2_CID_CODEC_FRAME_TAG",__func__);
+        LOGE("[%s] VIDIOC_G_CTRL failed, V4L2_CID_CODEC_FRAME_TAG",__func__);
         return MFC_RET_ENC_EXE_ERR;
     }
 
@@ -1098,7 +1099,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncExe(void *openHandle)
 
     ret = ioctl(pCTX->hMFC, VIDIOC_QBUF, &qbuf);
     if (ret != 0) {
-        ALOGE("[%s] VIDIOC_QBUF failed, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE",__func__);
+        LOGE("[%s] VIDIOC_QBUF failed, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE",__func__);
         return MFC_RET_ENC_EXE_ERR;
     }
 
@@ -1113,7 +1114,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncExe(void *openHandle)
 
         ret = ioctl(pCTX->hMFC, VIDIOC_DQBUF, &qbuf);
         if (ret != 0) {
-            ALOGE("[%s] VIDIOC_DQBUF failed, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE",__func__);
+            LOGE("[%s] VIDIOC_DQBUF failed, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE",__func__);
             return MFC_RET_ENC_EXE_ERR;
         }
     }
@@ -1121,7 +1122,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncExe(void *openHandle)
 
     /* Update context stream buffer address */
     pCTX->virStrmBuf = pCTX->v4l2_enc.mfc_dst_bufs[dequeued_index];
-    ALOGV("[%s] Strm out idx %d",__func__,dequeued_index);
+    LOGV("[%s] Strm out idx %d",__func__,dequeued_index);
 
     return MFC_RET_OK;
 }
@@ -1131,12 +1132,12 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncSetConfig(void *openHandle, SSBSIP_MFC_ENC_CON
     _MFCLIB *pCTX;
 
     if (openHandle == NULL) {
-        ALOGE("[%s] openHandle is NULL\n",__func__);
+        LOGE("[%s] openHandle is NULL\n",__func__);
         return MFC_RET_INVALID_PARAM;
     }
 
     if (value == NULL) {
-        ALOGE("[%s] value is NULL\n",__func__);
+        LOGE("[%s] value is NULL\n",__func__);
         return MFC_RET_INVALID_PARAM;
     }
 
@@ -1167,7 +1168,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncSetConfig(void *openHandle, SSBSIP_MFC_ENC_CON
     case MFC_ENC_SETCONF_I_PERIOD:
 #endif
     default:
-        ALOGE("[%s] conf_type(%d) is NOT supported\n",__func__, conf_type);
+        LOGE("[%s] conf_type(%d) is NOT supported\n",__func__, conf_type);
         return MFC_RET_INVALID_PARAM;
     }
 
@@ -1181,12 +1182,12 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncGetConfig(void *openHandle, SSBSIP_MFC_ENC_CON
     pCTX = (_MFCLIB *) openHandle;
 
     if (openHandle == NULL) {
-        ALOGE("[%s] openHandle is NULL\n",__func__);
+        LOGE("[%s] openHandle is NULL\n",__func__);
         return MFC_RET_INVALID_PARAM;
     }
 
     if (value == NULL) {
-        ALOGE("[%s] value is NULL\n",__func__);
+        LOGE("[%s] value is NULL\n",__func__);
         return MFC_RET_INVALID_PARAM;
     }
 
@@ -1196,7 +1197,7 @@ SSBSIP_MFC_ERROR_CODE SsbSipMfcEncGetConfig(void *openHandle, SSBSIP_MFC_ENC_CON
         break;
 
     default:
-        ALOGE("[%s] conf_type(%d) is NOT supported\n",__func__, conf_type);
+        LOGE("[%s] conf_type(%d) is NOT supported\n",__func__, conf_type);
         return MFC_RET_INVALID_PARAM;
     }
 

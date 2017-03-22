@@ -196,6 +196,7 @@ OMX_ERRORTYPE SEC_OMX_AllocateBuffer(
     OMX_ERRORTYPE          ret = OMX_ErrorNone;
     OMX_COMPONENTTYPE     *pOMXComponent = NULL;
     SEC_OMX_BASECOMPONENT *pSECComponent = NULL;
+    SEC_OMX_VIDEODEC_COMPONENT *pVideoDec = NULL;
     SEC_OMX_BASEPORT      *pSECPort = NULL;
     OMX_BUFFERHEADERTYPE  *temp_bufferHeader = NULL;
     OMX_U8                *temp_buffer = NULL;
@@ -218,6 +219,7 @@ OMX_ERRORTYPE SEC_OMX_AllocateBuffer(
         goto EXIT;
     }
     pSECComponent = (SEC_OMX_BASECOMPONENT *)pOMXComponent->pComponentPrivate;
+    pVideoDec = (SEC_OMX_VIDEODEC_COMPONENT *)pSECComponent->hComponentHandle;
 
     pSECPort = &pSECComponent->pSECPort[nPortIndex];
     if (nPortIndex >= pSECComponent->portParam.nPorts) {
@@ -235,15 +237,25 @@ OMX_ERRORTYPE SEC_OMX_AllocateBuffer(
         goto EXIT;
     }
 
-    temp_buffer = SEC_OSAL_Malloc(sizeof(OMX_U8) * nSizeBytes);
-    if (temp_buffer == NULL) {
-        ret = OMX_ErrorInsufficientResources;
-        goto EXIT;
+    if ((pVideoDec->bDRMPlayerMode == OMX_TRUE) && (nPortIndex == INPUT_PORT_INDEX)) {
+        ret = pSECComponent->sec_allocSecureInputBuffer(hComponent, sizeof(OMX_U8) * nSizeBytes, &temp_buffer);
+        if (ret != OMX_ErrorNone)
+            goto EXIT;
+    } else {
+        temp_buffer = SEC_OSAL_Malloc(sizeof(OMX_U8) * nSizeBytes);
+        if (temp_buffer == NULL) {
+            ret = OMX_ErrorInsufficientResources;
+            goto EXIT;
+        }
     }
 
     temp_bufferHeader = (OMX_BUFFERHEADERTYPE *)SEC_OSAL_Malloc(sizeof(OMX_BUFFERHEADERTYPE));
     if (temp_bufferHeader == NULL) {
-        SEC_OSAL_Free(temp_buffer);
+        if ((pVideoDec->bDRMPlayerMode == OMX_TRUE) && (nPortIndex == INPUT_PORT_INDEX))
+            pSECComponent->sec_freeSecureInputBuffer(hComponent, temp_buffer);
+        else
+            SEC_OSAL_Free(temp_buffer);
+
         temp_buffer = NULL;
         ret = OMX_ErrorInsufficientResources;
         goto EXIT;
@@ -276,7 +288,11 @@ OMX_ERRORTYPE SEC_OMX_AllocateBuffer(
     }
 
     SEC_OSAL_Free(temp_bufferHeader);
-    SEC_OSAL_Free(temp_buffer);
+    if ((pVideoDec->bDRMPlayerMode == OMX_TRUE) && (nPortIndex == INPUT_PORT_INDEX))
+        pSECComponent->sec_freeSecureInputBuffer(hComponent, temp_buffer);
+    else
+        SEC_OSAL_Free(temp_buffer);
+
     ret = OMX_ErrorInsufficientResources;
 
 EXIT:
@@ -293,6 +309,7 @@ OMX_ERRORTYPE SEC_OMX_FreeBuffer(
     OMX_ERRORTYPE          ret = OMX_ErrorNone;
     OMX_COMPONENTTYPE     *pOMXComponent = NULL;
     SEC_OMX_BASECOMPONENT *pSECComponent = NULL;
+    SEC_OMX_VIDEODEC_COMPONENT *pVideoDec = NULL;
     SEC_OMX_BASEPORT      *pSECPort = NULL;
     OMX_BUFFERHEADERTYPE  *temp_bufferHeader = NULL;
     OMX_U8                *temp_buffer = NULL;
@@ -315,6 +332,7 @@ OMX_ERRORTYPE SEC_OMX_FreeBuffer(
         goto EXIT;
     }
     pSECComponent = (SEC_OMX_BASECOMPONENT *)pOMXComponent->pComponentPrivate;
+    pVideoDec = (SEC_OMX_VIDEODEC_COMPONENT *)pSECComponent->hComponentHandle;
     pSECPort = &pSECComponent->pSECPort[nPortIndex];
 
     if (CHECK_PORT_TUNNELED(pSECPort) && CHECK_PORT_BUFFER_SUPPLIER(pSECPort)) {
@@ -334,7 +352,10 @@ OMX_ERRORTYPE SEC_OMX_FreeBuffer(
         if (((pSECPort->bufferStateAllocate[i] | BUFFER_STATE_FREE) != 0) && (pSECPort->bufferHeader[i] != NULL)) {
             if (pSECPort->bufferHeader[i]->pBuffer == pBufferHdr->pBuffer) {
                 if (pSECPort->bufferStateAllocate[i] & BUFFER_STATE_ALLOCATED) {
-                    SEC_OSAL_Free(pSECPort->bufferHeader[i]->pBuffer);
+                    if ((pVideoDec->bDRMPlayerMode == OMX_TRUE) && (nPortIndex == INPUT_PORT_INDEX))
+                        pSECComponent->sec_freeSecureInputBuffer(hComponent, pSECPort->bufferHeader[i]->pBuffer);
+                    else
+                        SEC_OSAL_Free(pSECPort->bufferHeader[i]->pBuffer);
                     pSECPort->bufferHeader[i]->pBuffer = NULL;
                     pBufferHdr->pBuffer = NULL;
                 } else if (pSECPort->bufferStateAllocate[i] & BUFFER_STATE_ASSIGNED) {
@@ -683,6 +704,7 @@ OMX_BOOL SEC_Preprocessor_InputData(OMX_COMPONENTTYPE *pOMXComponent)
 {
     OMX_BOOL               ret = OMX_FALSE;
     SEC_OMX_BASECOMPONENT *pSECComponent = (SEC_OMX_BASECOMPONENT *)pOMXComponent->pComponentPrivate;
+    SEC_OMX_VIDEODEC_COMPONENT *pVideoDec = (SEC_OMX_VIDEODEC_COMPONENT *)pSECComponent->hComponentHandle;
     SEC_OMX_DATABUFFER    *inputUseBuffer = &pSECComponent->secDataBuffer[INPUT_PORT_INDEX];
     SEC_OMX_DATA          *inputData = &pSECComponent->processData[INPUT_PORT_INDEX];
     OMX_U32                copySize = 0;
@@ -703,7 +725,10 @@ OMX_BOOL SEC_Preprocessor_InputData(OMX_COMPONENTTYPE *pOMXComponent)
         } else {
             previousFrameEOF = OMX_FALSE;
         }
-        if ((pSECComponent->bUseFlagEOF == OMX_TRUE) &&
+        if (pVideoDec->bDRMPlayerMode == OMX_TRUE) {
+            flagEOF = OMX_TRUE;
+            checkedSize = checkInputStreamLen;
+        } else if ((pSECComponent->bUseFlagEOF == OMX_TRUE) &&
            !(inputUseBuffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG)) {
             flagEOF = OMX_TRUE;
             checkedSize = checkInputStreamLen;
@@ -723,9 +748,13 @@ OMX_BOOL SEC_Preprocessor_InputData(OMX_COMPONENTTYPE *pOMXComponent)
         if (inputUseBuffer->nFlags & OMX_BUFFERFLAG_EOS)
             pSECComponent->bSaveFlagEOS = OMX_TRUE;
 
-        if (((inputData->allocSize) - (inputData->dataLen)) >= copySize) {
-            if (copySize > 0)
-                SEC_OSAL_Memcpy(inputData->dataBuffer + inputData->dataLen, checkInputStream, copySize);
+        if ((((inputData->allocSize) - (inputData->dataLen)) >= copySize) || (pVideoDec->bDRMPlayerMode == OMX_TRUE)) {
+            if (pVideoDec->bDRMPlayerMode == OMX_TRUE) {
+                inputData->dataBuffer = checkInputStream;
+            } else {
+                if (copySize > 0)
+                    SEC_OSAL_Memcpy(inputData->dataBuffer + inputData->dataLen, checkInputStream, copySize);
+            }
 
             inputUseBuffer->dataLen -= copySize;
             inputUseBuffer->remainDataLen -= copySize;
@@ -778,10 +807,12 @@ OMX_BOOL SEC_Preprocessor_InputData(OMX_COMPONENTTYPE *pOMXComponent)
             flagEOF = OMX_FALSE;
         }
 
-        if (inputUseBuffer->remainDataLen == 0)
-            SEC_InputBufferReturn(pOMXComponent);
-        else
+        if (inputUseBuffer->remainDataLen == 0) {
+            if (pVideoDec->bDRMPlayerMode != OMX_TRUE)
+                SEC_InputBufferReturn(pOMXComponent);
+        } else {
             inputUseBuffer->dataValid = OMX_TRUE;
+        }
     }
 
     if (flagEOF == OMX_TRUE) {
@@ -933,6 +964,14 @@ OMX_ERRORTYPE SEC_OMX_BufferProcess(OMX_HANDLETYPE hComponent)
                 SEC_OSAL_MutexLock(inputUseBuffer->bufferMutex);
                 SEC_OSAL_MutexLock(outputUseBuffer->bufferMutex);
                 ret = pSECComponent->sec_mfc_bufferProcess(pOMXComponent, inputData, outputData);
+
+                if (pVideoDec->bDRMPlayerMode == OMX_TRUE) {
+                    if ((inputUseBuffer->remainDataLen == 0) &&
+                        (ret != OMX_ErrorInputDataDecodeYet))
+                        SEC_InputBufferReturn(pOMXComponent);
+                    else
+                        inputUseBuffer->dataValid = OMX_TRUE;
+                }
                 SEC_OSAL_MutexUnlock(outputUseBuffer->bufferMutex);
                 SEC_OSAL_MutexUnlock(inputUseBuffer->bufferMutex);
 

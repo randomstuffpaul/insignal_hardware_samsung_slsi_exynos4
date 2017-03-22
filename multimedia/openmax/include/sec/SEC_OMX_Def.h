@@ -81,6 +81,9 @@ typedef enum _SEC_OMX_INDEXTYPE
     /* for Android Store Metadata Inbuffer */
 #define SEC_INDEX_PARAM_STORE_METADATA_BUFFER "OMX.google.android.index.storeMetaDataInBuffers"
     OMX_IndexParamStoreMetaDataBuffer     = 0x7F000014,
+    /* prepend SPS/PPS to I/IDR for H.264 Encoder */
+#define SEC_INDEX_PARAM_PREPEND_SPSPPS_TO_IDR "OMX.google.android.index.prependSPSPPSToIDRFrames"
+    OMX_IndexParamPrependSPSPPSToIDR        = 0x7F000015,
 
     /* for Android PV OpenCore*/
     OMX_COMPONENT_CAPABILITY_TYPE_INDEX = 0xFF7A347
@@ -129,6 +132,9 @@ typedef enum _SEC_OMX_COLOR_FORMATTYPE {
     OMX_SEC_COLOR_FormatYUV420Planar_TB_LR     = 0x7FC0000D,  /* 0x7FC0000D */
     OMX_SEC_COLOR_FormatYUV420Planar_TB_RL   = 0x7FC0000E,  /* 0x7FC0000E */
 #endif
+    OMX_SEC_COLOR_FormatNV21LPhysicalAddress = 0x7F000010,
+    OMX_SEC_COLOR_FormatNV21Linear           = 0x7F000011,
+
     /* for Android Native Window */
     OMX_SEC_COLOR_FormatANBYUV420SemiPlanar  = 0x100,
     /* for Android SurfaceMediaSource*/
@@ -144,6 +150,8 @@ typedef enum _SEC_OMX_SUPPORTFORMAT_TYPE
     supportFormat_4,
     supportFormat_5,
     supportFormat_6,
+    supportFormat_7,
+    supportFormat_8
 } SEC_OMX_SUPPORTFORMAT_TYPE;
 
 /* for Android PV OpenCore*/

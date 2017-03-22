@@ -1,4 +1,4 @@
-# Copyright (C) 2012 The Android Open Source Project
+# Copyright (C) 2008 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ifeq ($(TARGET_BOARD_PLATFORM), exynos4412)
 
 LOCAL_PATH:= $(call my-dir)
 # HAL module implemenation, not prelinked and stored in
@@ -21,19 +20,73 @@ LOCAL_PATH:= $(call my-dir)
 include $(CLEAR_VARS)
 LOCAL_PRELINK_MODULE := false
 LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/hw
-LOCAL_SHARED_LIBRARIES := liblog libcutils libEGL libGLESv1_CM libhardware \
-    libhardware_legacy libion libutils libsync libexynosv4l2 libexynosfimc libedid
-LOCAL_CFLAGS += -DLOG_TAG=\"hwcomposer\"
+LOCAL_SHARED_LIBRARIES := liblog libcutils libEGL \
+			  libGLESv1_CM libhardware_legacy libhardware libion libutils libsync
+
+ifeq ($(BOARD_USE_V4L2_ION),true)
+LOCAL_SHARED_LIBRARIES += libion
+endif
 
 LOCAL_C_INCLUDES := \
-    $(LOCAL_PATH)/../include \
-    $(LOCAL_PATH)/../libexynosutils \
-    vendor/samsung_slsi/exynos4412/gralloc
+	$(LOCAL_PATH)/../include \
+	$(LOCAL_PATH)/../libexynosutils 
 
-LOCAL_SRC_FILES := hwc.cpp
+LOCAL_SRC_FILES := SecHWCLog.cpp SecHWCUtils.cpp hwc.cpp
 
-LOCAL_MODULE := hwcomposer.$(TARGET_DEVICE)
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/../libfimg
+
+ifeq ($(TARGET_SOC),exynos4210)
+LOCAL_CFLAGS += -DSAMSUNG_EXYNOS4210
+endif
+
+ifeq ($(TARGET_SOC),exynos4x12)
+LOCAL_CFLAGS += -DSAMSUNG_EXYNOS4x12
+endif
+
+ifeq ($(BOARD_USES_HDMI),true)
+LOCAL_C_INCLUDES += \
+	hardware/samsung_slsi/$(TARGET_BOARD_PLATFORM)/include \
+	hardware/samsung_slsi/$(TARGET_BOARD_PLATFORM)/libhdmi/libhdmiservice
+
+LOCAL_SHARED_LIBRARIES 	+= libhdmiclient libTVOut
+
+LOCAL_CFLAGS += -DBOARD_USES_HDMI
+LOCAL_CFLAGS += -DBOARD_HDMI_STD=$(BOARD_HDMI_STD)
+LOCAL_CFLAGS += -DVIDEO_DUAL_DISPLAY
+
+ifeq ($(BOARD_USES_HDMI_SUBTITLES),true)
+	LOCAL_CFLAGS += -DBOARD_USES_HDMI_SUBTITLES
+endif
+
+ifeq ($(BOARD_HDMI_STD), STD_NTSC_M)
+LOCAL_CFLAGS  += -DSTD_NTSC_M
+endif
+
+ifeq ($(BOARD_HDMI_STD),STD_480P)
+LOCAL_CFLAGS  += -DSTD_480P
+endif
+
+ifeq ($(BOARD_HDMI_STD),STD_720P)
+LOCAL_CFLAGS  += -DSTD_720P
+endif
+
+ifeq ($(BOARD_HDMI_STD),STD_1080P)
+LOCAL_CFLAGS  += -DSTD_1080P
+endif
+endif
+
+ifeq ($(BOARD_USE_V4L2),true)
+LOCAL_CFLAGS += -DBOARD_USE_V4L2
+endif
+
+ifeq ($(BOARD_USE_V4L2_ION),true)
+LOCAL_CFLAGS += -DBOARD_USE_V4L2_ION
+endif
+
+ifeq ($(BOARD_NO_OVERLAY),true)
+LOCAL_CFLAGS += -DBOARD_NO_OVERLAY
+endif
+
+LOCAL_MODULE := hwcomposer.$(TARGET_BOARD_PLATFORM)
 LOCAL_MODULE_TAGS := optional
 include $(BUILD_SHARED_LIBRARY)
-
-endif

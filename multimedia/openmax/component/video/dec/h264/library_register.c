@@ -52,6 +52,11 @@ OSCL_EXPORT_REF int SEC_OMX_COMPONENT_Library_Register(SECRegisterComponentType 
     SEC_OSAL_Strcpy(secComponents[1]->roles[0], SEC_OMX_COMPONENT_H264_DEC_ROLE);
     secComponents[1]->totalRoleNum = MAX_COMPONENT_ROLE_NUM;
 
+    /* component 3 - video decoder H.264 for DRM */
+    SEC_OSAL_Strcpy(secComponents[2]->componentName, SEC_OMX_COMPONENT_H264_DRM_DEC);
+    SEC_OSAL_Strcpy(secComponents[2]->roles[0], SEC_OMX_COMPONENT_H264_DEC_ROLE);
+    secComponents[2]->totalRoleNum = MAX_COMPONENT_ROLE_NUM;
+
 EXIT:
     FunctionOut();
 

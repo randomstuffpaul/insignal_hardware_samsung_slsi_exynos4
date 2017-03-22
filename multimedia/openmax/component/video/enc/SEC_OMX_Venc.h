@@ -47,7 +47,7 @@
 
 #define MFC_INPUT_BUFFER_NUM_MAX            2
 
-#define INPUT_PORT_SUPPORTFORMAT_NUM_MAX    7
+#define INPUT_PORT_SUPPORTFORMAT_NUM_MAX    9
 #define OUTPUT_PORT_SUPPORTFORMAT_NUM_MAX   1
 
 #ifdef USE_STOREMETADATA
@@ -92,9 +92,13 @@ typedef struct _SEC_OMX_VIDEOENC_COMPONENT
     OMX_BOOL IntraRefreshVOP;
     OMX_VIDEO_CONTROLRATETYPE eControlRate[ALL_PORT_NUM];
     OMX_VIDEO_PARAM_QUANTIZATIONTYPE quantization;
+    OMX_VIDEO_PARAM_INTRAREFRESHTYPE intraRefresh;
     OMX_BOOL bFirstFrame;
     MFC_ENC_INPUT_BUFFER MFCEncInputBuffer[MFC_INPUT_BUFFER_NUM_MAX];
     OMX_U32  indexInputBuffer;
+
+    /* CSC handle */
+    OMX_PTR csc_handle;
 } SEC_OMX_VIDEOENC_COMPONENT;
 
 #ifdef __cplusplus

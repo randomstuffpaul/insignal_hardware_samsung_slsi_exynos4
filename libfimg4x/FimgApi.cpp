@@ -270,14 +270,14 @@ extern "C" int SyncFimgApi(void)
 
 void printDataBlit(char *title, struct fimg2d_blit *cmd)
 {
-    SLOGI("%s\n", title);
+    ALOGI("%s\n", title);
 
-    SLOGI("    sequence_no. = %u\n", cmd->seq_no);
-    SLOGI("    blit_op      = %d(%s)\n", cmd->op, optbl[cmd->op].str);
-    SLOGI("    fill_color   = %X\n", cmd->param.solid_color);
-    SLOGI("    global_alpha = %u\n", (unsigned int)cmd->param.g_alpha);
-    SLOGI("    PREMULT      = %s\n", cmd->param.premult == PREMULTIPLIED ? "PREMULTIPLIED" : "NON-PREMULTIPLIED");
-    SLOGI("    do_dither    = %s\n", cmd->param.dither == true ? "dither" : "no-dither");
+    ALOGI("    sequence_no. = %u\n", cmd->seq_no);
+    ALOGI("    blit_op      = %d(%s)\n", cmd->op, optbl[cmd->op].str);
+    ALOGI("    fill_color   = %X\n", cmd->param.solid_color);
+    ALOGI("    global_alpha = %u\n", (unsigned int)cmd->param.g_alpha);
+    ALOGI("    PREMULT      = %s\n", cmd->param.premult == PREMULTIPLIED ? "PREMULTIPLIED" : "NON-PREMULTIPLIED");
+    ALOGI("    do_dither    = %s\n", cmd->param.dither == true ? "dither" : "no-dither");
 
     printDataBlitRotate(cmd->param.rotate);
 
@@ -295,36 +295,56 @@ void printDataBlit(char *title, struct fimg2d_blit *cmd)
 void printDataBlitImage(char *title, struct fimg2d_image *image)
 {
     if (NULL != image) {
-    SLOGI("    Image_%s\n", title);
-    SLOGI("        addr = %X\n", image->addr.start);
-    SLOGI("        format = %d\n", image->fmt);
+    ALOGI("    Image_%s\n", title);
+    ALOGI("        addr = %X\n", image->addr.start);
+    ALOGI("        format = %d\n", image->fmt);
     } else
-        SLOGI("    Image_%s : NULL\n", title);
+        ALOGI("    Image_%s : NULL\n", title);
 }
 
 void printDataBlitRect(char *title, struct fimg2d_rect *rect)
 {
     if (NULL != rect) {
-        SLOGI("    RECT_%s\n", title);
-        SLOGI("        (x1, y1) = (%d, %d)\n", rect->x1, rect->y1);
-        SLOGI("        (x2, y2) = (%d, %d)\n", rect->x2, rect->y2);
-        SLOGI("        (width, height) = (%d, %d)\n", rect->x2 - rect->x1, rect->y2 - rect->y1);
+        ALOGI("    RECT_%s\n", title);
+        ALOGI("        (x1, y1) = (%d, %d)\n", rect->x1, rect->y1);
+        ALOGI("        (x2, y2) = (%d, %d)\n", rect->x2, rect->y2);
+        ALOGI("        (width, height) = (%d, %d)\n", rect->x2 - rect->x1, rect->y2 - rect->y1);
     } else
-        SLOGI("    RECT_%s : NULL\n", title);
+        ALOGI("    RECT_%s : NULL\n", title);
 }
 
 void printDataBlitRotate(int rotate)
 {
-    SLOGI("    ROTATE : %d\n", rotate);
+    ALOGI("    ROTATE : %d\n", rotate);
 }
 
 void printDataBlitScale(struct fimg2d_scale *scaling)
 {
-    SLOGI("    SCALING\n");
-    SLOGI("        scale_mode : %s\n", scaling->mode == 0 ?
+    ALOGI("    SCALING\n");
+    ALOGI("        scale_mode : %s\n", scaling->mode == 0 ?
                                       "NO_SCALING" :
                           (scaling->mode == 1 ? "SCALING_NEAREST" : "SCALING_BILINEAR"));
-    SLOGI("        src : (src_w, src_h) = (%d, %d)\n", scaling->src_w, scaling->src_h);
-    SLOGI("        dst : (dst_w, dst_h) = (%d, %d)\n", scaling->dst_w, scaling->dst_h);
-    SLOGI("        scaling_factor : (scale_w, scale_y) = (%3.2f, %3.2f)\n", (double)scaling->dst_w / scaling->src_w, (double)scaling->dst_h / scaling->src_h);
+    ALOGI("        src : (src_w, src_h) = (%d, %d)\n", scaling->src_w, scaling->src_h);
+    ALOGI("        dst : (dst_w, dst_h) = (%d, %d)\n", scaling->dst_w, scaling->dst_h);
+    ALOGI("        scaling_factor : (scale_w, scale_y) = (%3.2f, %3.2f)\n", (double)scaling->dst_w / scaling->src_w, (double)scaling->dst_h / scaling->src_h);
+}
+
+void printDataMatrix(int matrixType)
+{
+    ALOGI("    MATRIX\n");
+
+    if (matrixType & SkMatrix::kIdentity_Mask)
+        ALOGI("        Matrix_type : Identity_Mask\n");
+
+    if (matrixType & SkMatrix::kTranslate_Mask)
+        ALOGI("        Matrix_type : Translate_Mask(the matrix has translation)\n");
+
+    if (matrixType & SkMatrix::kScale_Mask)
+        ALOGI("        Matrix_type : Scale_Mask(the matrix has X or Y scale)\n");
+
+    if (matrixType & SkMatrix::kAffine_Mask)
+        ALOGI("        Matrix_type : Affine_Mask(the matrix skews or rotates)\n");
+
+    if (matrixType & SkMatrix::kPerspective_Mask)
+        ALOGI("        Matrix_type : Perspective_Mask(the matrix is in perspective)\n");
 }

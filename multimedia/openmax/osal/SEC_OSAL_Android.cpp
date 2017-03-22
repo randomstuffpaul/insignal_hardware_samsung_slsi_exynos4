@@ -29,11 +29,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <ui/ANativeObjectBase.h>
+//#include <ui/android_native_buffer.h>
 #include <ui/GraphicBuffer.h>
 #include <ui/GraphicBufferMapper.h>
 #include <ui/Rect.h>
-#include <HardwareAPI.h>
+#include <media/hardware/HardwareAPI.h>
 #include <hardware/hardware.h>
 #include <media/hardware/MetadataBufferType.h>
 
@@ -47,8 +47,6 @@
 #define SEC_LOG_TAG    "SEC_OSAL_Android"
 #define SEC_LOG_OFF
 #include "SEC_OSAL_Log.h"
-
-#define GRALLOC_ALIGN( value, base ) (((value) + ((base) - 1)) & ~((base) - 1))
 
 using namespace android;
 
@@ -173,9 +171,6 @@ OMX_ERRORTYPE SEC_OSAL_LockANBHandle(
         goto EXIT;
     }
 
-    vaddr[1] = vaddr[0] + (GRALLOC_ALIGN(width, 16) * height);
-    vaddr[2] = vaddr[1] + ((GRALLOC_ALIGN(width, 16) * height) / 4);
-
     SEC_OSAL_Log(SEC_LOG_TRACE, "%s: buffer locked: 0x%x", __func__, *vaddr);
 
 EXIT:
@@ -208,7 +203,6 @@ EXIT:
     return ret;
 }
 
-#ifdef USE_CSC_FIMC
 OMX_ERRORTYPE SEC_OSAL_GetPhysANBHandle(
     OMX_IN OMX_U32 handle,
     OMX_OUT OMX_PTR *paddr)
@@ -232,7 +226,6 @@ EXIT:
 
     return ret;
 }
-#endif
 
 OMX_ERRORTYPE SEC_OSAL_LockANB(
     OMX_IN OMX_PTR pBuffer,
@@ -271,7 +264,6 @@ EXIT:
     return ret;
 }
 
-#ifdef USE_CSC_FIMC
 OMX_ERRORTYPE SEC_OSAL_GetPhysANB(
     OMX_IN OMX_PTR pBuffer,
     OMX_OUT OMX_PTR *paddr)
@@ -288,7 +280,6 @@ EXIT:
 
     return ret;
 }
-#endif
 
 OMX_ERRORTYPE SEC_OSAL_GetANBParameter(
     OMX_IN OMX_HANDLETYPE hComponent,

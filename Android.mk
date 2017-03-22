@@ -1,5 +1,4 @@
 #
-#
 # Copyright (C) 2009 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,46 +14,31 @@
 # limitations under the License.
 #
 
-ifeq ($(TARGET_BOARD_PLATFORM),exynos4412)
+ifeq ($(TARGET_BOARD_PLATFORM),exynos4)
+common_exynos4_dirs := \
+    libgralloc_ump   \
+    lib/mali_ump     \
+    libhdmi          \
+    libfimc          \
+    libhwc    \
+    libhwconverter   \
+    libcamera        \
+    smdk_common      \
+    multimedia			 \
+    libswconverter	 \
+    libswscaler
 
-exynos4_dirs := \
-	libexynosutils \
-	libv4l2 \
-	libfimc \
-	libedid \
-	libhwc \
-        libhwjpeg \
-        libstagefrighthw \
-        multimedia \
-        libaudio \
-        libfimg4x
+exynos4210_dirs := $(common_exynos4_dirs) \
+    libs5pjpeg       \
+    libfimg3x
 
-ifeq ($(BOARD_USES_CAMERA_API_2), true)
-exynos4_dirs += libcamera2
+exynos4x12_dirs := $(common_exynos4_dirs) \
+    libhwjpeg        \
+    libfimg4x
+
+ifeq ($(TARGET_SOC),exynos4210)
+  include $(call all-named-subdir-makefiles,$(exynos4210_dirs))
 else
-exynos4_dirs += libcamera
+  include $(call all-named-subdir-makefiles,$(exynos4x12_dirs))
 endif
-
-BOARD_USE_SAMSUNG_COLORFORMAT := true
-BOARD_FIX_NATIVE_COLOR_FORMAT := true
-#BOARD_NONBLOCK_MODE_PROCESS := true
-#BOARD_USE_STOREMETADATA := true
-#BOARD_USE_METADATABUFFERTYPE := true
-#BOARD_USES_MFC_FPS := true
-#BOARD_USE_S3D_SUPPORT := true
-#BOARD_USE_EXYNOS_OMX := true
-
-# TVOUT
-#BOARD_USES_HDMI := true
-#BOARD_HDMI_STD := STD_1080P
-#BOARD_HDMI_DDC_CH := DDC_CH_I2C_2
-#BOARD_USES_HDMI_FIMGAPI := true
-#BOARD_USES_FIMGAPI := true
-
-# HWC
-USE_HWC_CSC_THREAD := true
-
-
-include $(call all-named-subdir-makefiles,$(exynos4_dirs))
-
 endif

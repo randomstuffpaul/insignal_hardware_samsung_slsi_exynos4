@@ -1,7 +1,3 @@
-WITH_SEC_OMX := true
-
-ifeq ($(WITH_SEC_OMX), true)
-
 LOCAL_PATH := $(call my-dir)
 BOARD_USE_ANB := true
 
@@ -33,6 +29,4 @@ endif
 ifeq ($(BOARD_USE_ALP_AUDIO), true)
 include $(SEC_OMX_COMPONENT)/audio/dec/Android.mk
 include $(SEC_OMX_COMPONENT)/audio/dec/mp3/Android.mk
-endif
-
 endif

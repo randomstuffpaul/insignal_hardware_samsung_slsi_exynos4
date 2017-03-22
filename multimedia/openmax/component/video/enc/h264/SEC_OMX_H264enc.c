@@ -39,13 +39,18 @@
 #include "library_register.h"
 #include "SEC_OMX_H264enc.h"
 #include "SsbSipMfcApi.h"
-#include "color_space_convertor.h"
+#include "csc.h"
 
 #undef  SEC_LOG_TAG
 #define SEC_LOG_TAG    "SEC_H264_ENC"
 #define SEC_LOG_OFF
 #include "SEC_OSAL_Log.h"
 
+#ifdef USE_H264_PREPEND_SPS_PPS
+static OMX_U8 *sps_pps_data;
+static OMX_U8 *sps_pps_frame;
+static OMX_U32 sps_pps_data_size;
+#endif
 
 /* H.264 Encoder Supported Levels & profiles */
 SEC_OMX_VIDEO_PROFILELEVEL supportedAVCProfileLevels[] ={
@@ -105,32 +110,32 @@ OMX_U32 OMXAVCProfileToProfileIDC(OMX_VIDEO_AVCPROFILETYPE profile)
 
 OMX_U32 OMXAVCLevelToLevelIDC(OMX_VIDEO_AVCLEVELTYPE level)
 {
-    OMX_U32 ret = 11; //default OMX_VIDEO_AVCLevel4
+    OMX_U32 ret = 40; //default OMX_VIDEO_AVCLevel4
 
     if (level == OMX_VIDEO_AVCLevel1)
-        ret = 0;
-    else if (level == OMX_VIDEO_AVCLevel1b)
-        ret = 1;
-    else if (level == OMX_VIDEO_AVCLevel11)
-        ret = 2;
-    else if (level == OMX_VIDEO_AVCLevel12)
-        ret = 3;
-    else if (level == OMX_VIDEO_AVCLevel13)
-        ret = 4;
-    else if (level == OMX_VIDEO_AVCLevel2)
-        ret = 5;
-    else if (level == OMX_VIDEO_AVCLevel21)
-        ret = 6;
-    else if (level == OMX_VIDEO_AVCLevel22)
-        ret = 7;
-    else if (level == OMX_VIDEO_AVCLevel3)
-        ret = 8;
-    else if (level == OMX_VIDEO_AVCLevel31)
-        ret = 9;
-    else if (level == OMX_VIDEO_AVCLevel32)
         ret = 10;
-    else if (level == OMX_VIDEO_AVCLevel4)
+    else if (level == OMX_VIDEO_AVCLevel1b)
+        ret = 9;
+    else if (level == OMX_VIDEO_AVCLevel11)
         ret = 11;
+    else if (level == OMX_VIDEO_AVCLevel12)
+        ret = 12;
+    else if (level == OMX_VIDEO_AVCLevel13)
+        ret = 13;
+    else if (level == OMX_VIDEO_AVCLevel2)
+        ret = 20;
+    else if (level == OMX_VIDEO_AVCLevel21)
+        ret = 21;
+    else if (level == OMX_VIDEO_AVCLevel22)
+        ret = 22;
+    else if (level == OMX_VIDEO_AVCLevel3)
+        ret = 30;
+    else if (level == OMX_VIDEO_AVCLevel31)
+        ret = 31;
+    else if (level == OMX_VIDEO_AVCLevel32)
+        ret = 32;
+    else if (level == OMX_VIDEO_AVCLevel4)
+        ret = 40;
 
     return ret;
 }
@@ -161,6 +166,9 @@ void H264PrintParams(SSBSIP_MFC_ENC_H264_PARAM *h264Arg)
     SEC_OSAL_Log(SEC_LOG_TRACE, "NumberRefForPframes     : %d\n", h264Arg->NumberRefForPframes);
     SEC_OSAL_Log(SEC_LOG_TRACE, "SliceMode               : %d\n", h264Arg->SliceMode);
     SEC_OSAL_Log(SEC_LOG_TRACE, "SliceArgument           : %d\n", h264Arg->SliceArgument);
+#ifdef USE_SLICE_OUTPUT_MODE
+    SEC_OSAL_Log(SEC_LOG_TRACE, "OutputMode              : %d\n", h264Arg->OutputMode);
+#endif
     SEC_OSAL_Log(SEC_LOG_TRACE, "NumberBFrames           : %d\n", h264Arg->NumberBFrames);
     SEC_OSAL_Log(SEC_LOG_TRACE, "LoopFilterDisable       : %d\n", h264Arg->LoopFilterDisable);
     SEC_OSAL_Log(SEC_LOG_TRACE, "LoopFilterAlphaC0Offset : %d\n", h264Arg->LoopFilterAlphaC0Offset);
@@ -205,6 +213,9 @@ void Set_H264Enc_Param(SSBSIP_MFC_ENC_H264_PARAM *pH264Arg, SEC_OMX_BASECOMPONEN
     pH264Arg->SourceHeight = pSECOutputPort->portDefinition.format.video.nFrameHeight;
     pH264Arg->IDRPeriod    = pH264Enc->AVCComponent[OUTPUT_PORT_INDEX].nPFrames + 1;
     pH264Arg->SliceMode    = 0;
+#ifdef USE_SLICE_OUTPUT_MODE
+    pH264Arg->OutputMode   = FRAME;
+#endif
     pH264Arg->RandomIntraMBRefresh = 0;
     pH264Arg->Bitrate      = pSECOutputPort->portDefinition.format.video.nBitrate;
     pH264Arg->QSCodeMax    = 51;
@@ -271,6 +282,12 @@ void Set_H264Enc_Param(SSBSIP_MFC_ENC_H264_PARAM *pH264Arg, SEC_OMX_BASECOMPONEN
         break;
     case OMX_SEC_COLOR_FormatNV12TPhysicalAddress:
     case OMX_SEC_COLOR_FormatNV12Tiled:
+        pH264Arg->FrameMap = NV12_TILE;
+        break;
+    case OMX_SEC_COLOR_FormatNV21LPhysicalAddress:
+    case OMX_SEC_COLOR_FormatNV21Linear:
+        pH264Arg->FrameMap = NV21_LINEAR;
+        break;
     default:
         pH264Arg->FrameMap = NV12_TILE;
         break;
@@ -599,6 +616,10 @@ OMX_ERRORTYPE SEC_MFC_H264Enc_SetParameter(
         pDstErrorCorrectionType->bEnableRVLC = pSrcErrorCorrectionType->bEnableRVLC;
     }
         break;
+#ifdef USE_H264_PREPEND_SPS_PPS
+    case OMX_IndexParamPrependSPSPPSToIDR:
+        break;
+#endif	  
     default:
         ret = SEC_OMX_VideoEncodeSetParameter(hComponent, nIndex, pComponentParameterStructure);
         break;
@@ -785,7 +806,14 @@ OMX_ERRORTYPE SEC_MFC_H264Enc_GetExtensionIndex(
     if (SEC_OSAL_Strcmp(cParameterName, SEC_INDEX_CONFIG_VIDEO_INTRAPERIOD) == 0) {
         *pIndexType = OMX_IndexConfigVideoIntraPeriod;
         ret = OMX_ErrorNone;
-    } else {
+    } 
+#ifdef USE_H264_PREPEND_SPS_PPS
+    else if (SEC_OSAL_Strcmp(cParameterName, SEC_INDEX_PARAM_PREPEND_SPSPPS_TO_IDR) == 0) {
+        *pIndexType = OMX_IndexParamPrependSPSPPSToIDR;
+        ret = OMX_ErrorNone;
+    } 
+#endif
+    else {
         ret = SEC_OMX_VideoEncodeGetExtensionIndex(hComponent, cParameterName, pIndexType);
     }
 
@@ -861,6 +889,7 @@ OMX_ERRORTYPE SEC_MFC_H264Enc_Init(OMX_COMPONENTTYPE *pOMXComponent)
     SEC_H264ENC_HANDLE        *pH264Enc = NULL;
     OMX_PTR                    hMFCHandle = NULL;
     OMX_S32                    returnCodec = 0;
+    CSC_METHOD csc_method = CSC_METHOD_SW;
 
     FunctionIn();
 
@@ -874,10 +903,11 @@ OMX_ERRORTYPE SEC_MFC_H264Enc_Init(OMX_COMPONENTTYPE *pOMXComponent)
     case OMX_SEC_COLOR_FormatNV12TPhysicalAddress:
     case OMX_SEC_COLOR_FormatNV12LPhysicalAddress:
     case OMX_SEC_COLOR_FormatNV12LVirtualAddress:
+    case OMX_SEC_COLOR_FormatNV21LPhysicalAddress:
         hMFCHandle = (OMX_PTR)SsbSipMfcEncOpen();
         break;
     default: {
-        SSBIP_MFC_BUFFER_TYPE buf_type = NO_CACHE;
+        SSBIP_MFC_BUFFER_TYPE buf_type = CACHE;
         hMFCHandle = (OMX_PTR)SsbSipMfcEncOpenExt(&buf_type);
         break;
     }
@@ -933,6 +963,14 @@ OMX_ERRORTYPE SEC_MFC_H264Enc_Init(OMX_COMPONENTTYPE *pOMXComponent)
     pVideoEnc->indexInputBuffer = 0;
 
     pVideoEnc->bFirstFrame = OMX_TRUE;
+	
+#ifdef USE_H264_PREPEND_SPS_PPS
+    sps_pps_data = (OMX_U8 *)SEC_OSAL_Malloc (1920 * 1080 * 1.5);
+    sps_pps_frame = (OMX_U8 *)SEC_OSAL_Malloc (1920 * 1080 * 1.5);
+    if ((sps_pps_data == NULL) || (sps_pps_frame == NULL)) {
+        SEC_OSAL_Log(SEC_LOG_ERROR, "... Malloc sps_pps_data buffer & sps_pps_frame buffer Failed ... ");
+    }
+#endif
 
 #ifdef NONBLOCK_MODE_PROCESS
     pVideoEnc->NBEncThread.bExitEncodeThread = OMX_FALSE;
@@ -948,6 +986,8 @@ OMX_ERRORTYPE SEC_MFC_H264Enc_Init(OMX_COMPONENTTYPE *pOMXComponent)
     SEC_OSAL_Memset(pSECComponent->timeStamp, -19771003, sizeof(OMX_TICKS) * MAX_TIMESTAMP);
     SEC_OSAL_Memset(pSECComponent->nFlags, 0, sizeof(OMX_U32) * MAX_FLAGS);
     pH264Enc->hMFCH264Handle.indexTimestamp = 0;
+
+    pVideoEnc->csc_handle = csc_init(&csc_method);
 
 EXIT:
     FunctionOut();
@@ -992,6 +1032,11 @@ OMX_ERRORTYPE SEC_MFC_H264Enc_Terminate(OMX_COMPONENTTYPE *pOMXComponent)
         hMFCHandle = pH264Enc->hMFCH264Handle.hMFCHandle = NULL;
     }
 
+    if (pVideoEnc->csc_handle != NULL) {
+        csc_deinit(pVideoEnc->csc_handle);
+        pVideoEnc->csc_handle = NULL;
+    }
+
 EXIT:
     FunctionOut();
 
@@ -1033,7 +1078,10 @@ OMX_ERRORTYPE SEC_MFC_H264_Encode_Nonblock(OMX_COMPONENTTYPE *pOMXComponent, SEC
             pH264Enc->hMFCH264Handle.headerData.pHeaderPPS = (OMX_U8 *)outputInfo.StrmVirAddr + iSpsSize;
             pH264Enc->hMFCH264Handle.headerData.PPSLen = iPpsSize;
         }
-
+#ifdef USE_H264_PREPEND_SPS_PPS
+        SEC_OSAL_Memcpy(sps_pps_data, outputInfo.StrmVirAddr, outputInfo.headerSize);
+        sps_pps_data_size = outputInfo.headerSize;
+#endif
         pOutputData->dataBuffer = outputInfo.StrmVirAddr;
         pOutputData->allocSize = outputInfo.headerSize;
         pOutputData->dataLen = outputInfo.headerSize;
@@ -1069,16 +1117,9 @@ OMX_ERRORTYPE SEC_MFC_H264_Encode_Nonblock(OMX_COMPONENTTYPE *pOMXComponent, SEC
         pInputInfo->CVirAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CVirAddr;
     } else {
         switch (pSECPort->portDefinition.format.video.eColorFormat) {
-        case OMX_SEC_COLOR_FormatNV12LVirtualAddress:
-            addrInfo.pAddrY = *((void **)pInputData->dataBuffer);
-            addrInfo.pAddrC = (void *)((char *)addrInfo.pAddrY + pInputInfo->YSize);
-
-            pInputInfo->YPhyAddr = addrInfo.pAddrY;
-            pInputInfo->CPhyAddr = addrInfo.pAddrC;
-            break;
         case OMX_SEC_COLOR_FormatNV12TPhysicalAddress:
         case OMX_SEC_COLOR_FormatNV12LPhysicalAddress:
-        default:{
+        case OMX_SEC_COLOR_FormatNV21LPhysicalAddress: {
 #ifndef USE_METADATABUFFERTYPE
             /* USE_FIMC_FRAME_BUFFER */
             SEC_OSAL_Memcpy(&addrInfo.pAddrY, pInputData->dataBuffer, sizeof(addrInfo.pAddrY));
@@ -1090,21 +1131,23 @@ OMX_ERRORTYPE SEC_MFC_H264_Encode_Nonblock(OMX_COMPONENTTYPE *pOMXComponent, SEC
             SEC_OSAL_Memcpy(&addrInfo.pAddrY, ppBuf[0], sizeof(addrInfo.pAddrY));
             SEC_OSAL_Memcpy(&addrInfo.pAddrC, ppBuf[1], sizeof(addrInfo.pAddrC));
 #endif
-
-#ifdef USES_CAMERA_API_2
-            SEC_OSAL_LockANBHandle((OMX_U32)ppBuf[0],
-                pSECPort->portDefinition.format.video.nFrameWidth,
-                pSECPort->portDefinition.format.video.nFrameHeight,
-                OMX_COLOR_FormatAndroidOpaque, &pInputInfo->YPhyAddr);
-            pInputInfo->CPhyAddr = pInputInfo->YPhyAddr +
-                (pSECPort->portDefinition.format.video.nFrameWidth *
-                pSECPort->portDefinition.format.video.nFrameHeight);
-#else
             pInputInfo->YPhyAddr = addrInfo.pAddrY;
             pInputInfo->CPhyAddr = addrInfo.pAddrC;
-#endif
             break;
         }
+        case OMX_SEC_COLOR_FormatNV12LVirtualAddress:
+            addrInfo.pAddrY = *((void **)pInputData->dataBuffer);
+            addrInfo.pAddrC = (void *)((char *)addrInfo.pAddrY + pInputInfo->YSize);
+
+            pInputInfo->YPhyAddr = addrInfo.pAddrY;
+            pInputInfo->CPhyAddr = addrInfo.pAddrC;
+            break;
+        default:
+            pInputInfo->YPhyAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YPhyAddr;
+            pInputInfo->CPhyAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CPhyAddr;
+            pInputInfo->YVirAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YVirAddr;
+            pInputInfo->CVirAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CVirAddr;
+            break;
         }
     }
 
@@ -1133,6 +1176,15 @@ OMX_ERRORTYPE SEC_MFC_H264_Encode_Nonblock(OMX_COMPONENTTYPE *pOMXComponent, SEC
         }
 
         if (pH264Enc->hMFCH264Handle.returnCodec == MFC_RET_OK) {
+			
+#ifdef USE_H264_PREPEND_SPS_PPS
+        if (outputInfo.frameType == MFC_FRAME_TYPE_I_FRAME) {
+           SEC_OSAL_Memcpy(sps_pps_frame, outputInfo.StrmVirAddr, outputInfo.dataSize);
+           SEC_OSAL_Memcpy(outputInfo.StrmVirAddr, sps_pps_data, sps_pps_data_size);
+           SEC_OSAL_Memcpy((OMX_U8 *)(outputInfo.StrmVirAddr) + sps_pps_data_size, sps_pps_frame, outputInfo.dataSize);
+           outputInfo.dataSize += sps_pps_data_size;
+        } 
+#endif
             /** Fill Output Buffer **/
             pOutputData->dataBuffer = outputInfo.StrmVirAddr;
             pOutputData->allocSize = outputInfo.dataSize;
@@ -1270,16 +1322,9 @@ OMX_ERRORTYPE SEC_MFC_H264_Encode_Block(OMX_COMPONENTTYPE *pOMXComponent, SEC_OM
 
     pSECPort = &pSECComponent->pSECPort[INPUT_PORT_INDEX];
     switch (pSECPort->portDefinition.format.video.eColorFormat) {
-    case OMX_SEC_COLOR_FormatNV12LVirtualAddress:
-        addrInfo.pAddrY = *((void **)pInputData->dataBuffer);
-        addrInfo.pAddrC = (void *)((char *)addrInfo.pAddrY + pInputInfo->YSize);
-
-        pInputInfo->YPhyAddr = addrInfo.pAddrY;
-        pInputInfo->CPhyAddr = addrInfo.pAddrC;
-        break;
     case OMX_SEC_COLOR_FormatNV12TPhysicalAddress:
     case OMX_SEC_COLOR_FormatNV12LPhysicalAddress:
-    default: {
+    case OMX_SEC_COLOR_FormatNV21LPhysicalAddress: {
 #ifndef USE_METADATABUFFERTYPE
         /* USE_FIMC_FRAME_BUFFER */
         SEC_OSAL_Memcpy(&addrInfo.pAddrY, pInputData->dataBuffer, sizeof(addrInfo.pAddrY));
@@ -1291,20 +1336,23 @@ OMX_ERRORTYPE SEC_MFC_H264_Encode_Block(OMX_COMPONENTTYPE *pOMXComponent, SEC_OM
         SEC_OSAL_Memcpy(&addrInfo.pAddrY, ppBuf[0], sizeof(addrInfo.pAddrY));
         SEC_OSAL_Memcpy(&addrInfo.pAddrC, ppBuf[1], sizeof(addrInfo.pAddrC));
 #endif
-#ifdef USES_CAMERA_API_2
-        SEC_OSAL_LockANBHandle((OMX_U32)ppBuf[0],
-            pSECPort->portDefinition.format.video.nFrameWidth,
-            pSECPort->portDefinition.format.video.nFrameHeight,
-            OMX_COLOR_FormatAndroidOpaque, &pInputInfo->YPhyAddr);
-        pInputInfo->CPhyAddr = pInputInfo->YPhyAddr +
-            (pSECPort->portDefinition.format.video.nFrameWidth *
-            pSECPort->portDefinition.format.video.nFrameHeight);
-#else
         pInputInfo->YPhyAddr = addrInfo.pAddrY;
         pInputInfo->CPhyAddr = addrInfo.pAddrC;
-#endif
         break;
     }
+    case OMX_SEC_COLOR_FormatNV12LVirtualAddress:
+        addrInfo.pAddrY = *((void **)pInputData->dataBuffer);
+        addrInfo.pAddrC = (void *)((char *)addrInfo.pAddrY + pInputInfo->YSize);
+
+        pInputInfo->YPhyAddr = addrInfo.pAddrY;
+        pInputInfo->CPhyAddr = addrInfo.pAddrC;
+        break;
+    default:
+        pInputInfo->YPhyAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YPhyAddr;
+        pInputInfo->CPhyAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CPhyAddr;
+        pInputInfo->YVirAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YVirAddr;
+        pInputInfo->CVirAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CVirAddr;
+        break;
     }
 
     returnCodec = SsbSipMfcEncSetInBuf(pH264Enc->hMFCH264Handle.hMFCHandle, pInputInfo);

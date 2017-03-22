@@ -47,6 +47,7 @@ extern "C" {
 typedef enum _LOG_LEVEL
 {
     SEC_LOG_TRACE,
+    SEC_LOG_INFO,
     SEC_LOG_WARNING,
     SEC_LOG_ERROR
 } SEC_LOG_LEVEL;

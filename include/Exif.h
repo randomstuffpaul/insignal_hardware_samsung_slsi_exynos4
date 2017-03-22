@@ -147,7 +147,7 @@ typedef enum {
 #define EXIF_DEF_USERCOMMENTS   "User comments"
 
 #define EXIF_DEF_YCBCR_POSITIONING  1   /* centered */
-#define EXIF_DEF_FNUMBER_NUM        26  /* 2.6 */
+#define EXIF_DEF_FNUMBER_NUM        22  /* 2.6 */
 #define EXIF_DEF_FNUMBER_DEN        10
 #define EXIF_DEF_EXPOSURE_PROGRAM   3   /* aperture priority */
 #define EXIF_DEF_FOCAL_LEN_NUM      278 /* 2.78mm */

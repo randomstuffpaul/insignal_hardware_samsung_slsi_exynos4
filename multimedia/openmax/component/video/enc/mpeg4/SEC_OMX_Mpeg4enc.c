@@ -40,7 +40,7 @@
 #include "library_register.h"
 #include "SEC_OMX_Mpeg4enc.h"
 #include "SsbSipMfcApi.h"
-#include "color_space_convertor.h"
+#include "csc.h"
 
 #undef  SEC_LOG_TAG
 #define SEC_LOG_TAG    "SEC_MPEG4_ENC"
@@ -135,6 +135,9 @@ void Mpeg4PrintParams(SSBSIP_MFC_ENC_MPEG4_PARAM *pMpeg4Param)
     SEC_OSAL_Log(SEC_LOG_TRACE, "SourceHeight            : %d\n", pMpeg4Param->SourceHeight);
     SEC_OSAL_Log(SEC_LOG_TRACE, "IDRPeriod               : %d\n", pMpeg4Param->IDRPeriod);
     SEC_OSAL_Log(SEC_LOG_TRACE, "SliceMode               : %d\n", pMpeg4Param->SliceMode);
+#ifdef USE_SLICE_OUTPUT_MODE
+    SEC_OSAL_Log(SEC_LOG_TRACE, "OutputMode              : %d\n", pMpeg4Param->OutputMode);
+#endif
     SEC_OSAL_Log(SEC_LOG_TRACE, "RandomIntraMBRefresh    : %d\n", pMpeg4Param->RandomIntraMBRefresh);
     SEC_OSAL_Log(SEC_LOG_TRACE, "EnableFRMRateControl    : %d\n", pMpeg4Param->EnableFRMRateControl);
     SEC_OSAL_Log(SEC_LOG_TRACE, "Bitrate                 : %d\n", pMpeg4Param->Bitrate);
@@ -201,6 +204,9 @@ void Set_Mpeg4Enc_Param(SSBSIP_MFC_ENC_MPEG4_PARAM *pMpeg4Param, SEC_OMX_BASECOM
     pMpeg4Param->SourceHeight         = pSECOutputPort->portDefinition.format.video.nFrameHeight;
     pMpeg4Param->IDRPeriod            = pMpeg4Enc->mpeg4Component[OUTPUT_PORT_INDEX].nPFrames + 1;
     pMpeg4Param->SliceMode            = 0;
+#ifdef USE_SLICE_OUTPUT_MODE
+    pMpeg4Param->OutputMode           = FRAME;
+#endif
     pMpeg4Param->RandomIntraMBRefresh = 0;
     pMpeg4Param->Bitrate              = pSECOutputPort->portDefinition.format.video.nBitrate;
     pMpeg4Param->QSCodeMax            = 30;
@@ -254,6 +260,12 @@ void Set_Mpeg4Enc_Param(SSBSIP_MFC_ENC_MPEG4_PARAM *pMpeg4Param, SEC_OMX_BASECOM
         break;
     case OMX_SEC_COLOR_FormatNV12TPhysicalAddress:
     case OMX_SEC_COLOR_FormatNV12Tiled:
+        pMpeg4Param->FrameMap = NV12_TILE;
+        break;
+    case OMX_SEC_COLOR_FormatNV21LPhysicalAddress:
+    case OMX_SEC_COLOR_FormatNV21Linear:
+        pMpeg4Param->FrameMap = NV21_LINEAR;
+        break;
     default:
         pMpeg4Param->FrameMap = NV12_TILE;
         break;
@@ -364,6 +376,12 @@ void Set_H263Enc_Param(SSBSIP_MFC_ENC_H263_PARAM *pH263Param, SEC_OMX_BASECOMPON
         break;
     case OMX_SEC_COLOR_FormatNV12TPhysicalAddress:
     case OMX_SEC_COLOR_FormatNV12Tiled:
+        pH263Param->FrameMap = NV12_TILE;
+        break;
+    case OMX_SEC_COLOR_FormatNV21LPhysicalAddress:
+    case OMX_SEC_COLOR_FormatNV21Linear:
+        pH263Param->FrameMap = NV21_LINEAR;
+        break;
     default:
         pH263Param->FrameMap = NV12_TILE;
         break;
@@ -1030,6 +1048,7 @@ OMX_ERRORTYPE SEC_MFC_Mpeg4Enc_Init(OMX_COMPONENTTYPE *pOMXComponent)
     SEC_MPEG4ENC_HANDLE       *pMpeg4Enc = NULL;
     OMX_HANDLETYPE             hMFCHandle = NULL;
     OMX_S32                    returnCodec = 0;
+    CSC_METHOD csc_method = CSC_METHOD_SW;
 
     FunctionIn();
 
@@ -1043,10 +1062,11 @@ OMX_ERRORTYPE SEC_MFC_Mpeg4Enc_Init(OMX_COMPONENTTYPE *pOMXComponent)
     case OMX_SEC_COLOR_FormatNV12TPhysicalAddress:
     case OMX_SEC_COLOR_FormatNV12LPhysicalAddress:
     case OMX_SEC_COLOR_FormatNV12LVirtualAddress:
+    case OMX_SEC_COLOR_FormatNV21LPhysicalAddress:
         hMFCHandle = (OMX_PTR)SsbSipMfcEncOpen();
         break;
     default: {
-        SSBIP_MFC_BUFFER_TYPE buf_type = NO_CACHE;
+        SSBIP_MFC_BUFFER_TYPE buf_type = CACHE;
         hMFCHandle = (OMX_PTR)SsbSipMfcEncOpenExt(&buf_type);
         break;
     }
@@ -1123,6 +1143,8 @@ OMX_ERRORTYPE SEC_MFC_Mpeg4Enc_Init(OMX_COMPONENTTYPE *pOMXComponent)
     SEC_OSAL_Memset(pSECComponent->nFlags, 0, sizeof(OMX_U32) * MAX_FLAGS);
     pMpeg4Enc->hMFCMpeg4Handle.indexTimestamp = 0;
 
+    pVideoEnc->csc_handle = csc_init(&csc_method);
+
 EXIT:
     FunctionOut();
 
@@ -1164,6 +1186,11 @@ OMX_ERRORTYPE SEC_MFC_Mpeg4Enc_Terminate(OMX_COMPONENTTYPE *pOMXComponent)
     if (hMFCHandle != NULL) {
         SsbSipMfcEncClose(hMFCHandle);
         hMFCHandle = pMpeg4Enc->hMFCMpeg4Handle.hMFCHandle = NULL;
+    }
+
+    if (pVideoEnc->csc_handle != NULL) {
+        csc_deinit(pVideoEnc->csc_handle);
+        pVideoEnc->csc_handle = NULL;
     }
 
 EXIT:
@@ -1231,16 +1258,9 @@ OMX_ERRORTYPE SEC_MFC_Mpeg4_Encode_Nonblock(OMX_COMPONENTTYPE *pOMXComponent, SE
         pInputInfo->CVirAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CVirAddr;
     } else {
         switch (pSECPort->portDefinition.format.video.eColorFormat) {
-        case OMX_SEC_COLOR_FormatNV12LVirtualAddress:
-            addrInfo.pAddrY = *((void **)pInputData->dataBuffer);
-            addrInfo.pAddrC = (void *)((char *)addrInfo.pAddrY + pInputInfo->YSize);
-
-            pInputInfo->YPhyAddr = addrInfo.pAddrY;
-            pInputInfo->CPhyAddr = addrInfo.pAddrC;
-            break;
         case OMX_SEC_COLOR_FormatNV12TPhysicalAddress:
         case OMX_SEC_COLOR_FormatNV12LPhysicalAddress:
-        default: {
+        case OMX_SEC_COLOR_FormatNV21LPhysicalAddress: {
 #ifndef USE_METADATABUFFERTYPE
             /* USE_FIMC_FRAME_BUFFER */
             SEC_OSAL_Memcpy(&addrInfo.pAddrY, pInputData->dataBuffer, sizeof(addrInfo.pAddrY));
@@ -1252,21 +1272,23 @@ OMX_ERRORTYPE SEC_MFC_Mpeg4_Encode_Nonblock(OMX_COMPONENTTYPE *pOMXComponent, SE
             SEC_OSAL_Memcpy(&addrInfo.pAddrY, ppBuf[0], sizeof(addrInfo.pAddrY));
             SEC_OSAL_Memcpy(&addrInfo.pAddrC, ppBuf[1], sizeof(addrInfo.pAddrC));
 #endif
-
-#ifdef USES_CAMERA_API_2
-            SEC_OSAL_LockANBHandle((OMX_U32)ppBuf[0],
-                pSECPort->portDefinition.format.video.nFrameWidth,
-                pSECPort->portDefinition.format.video.nFrameHeight,
-                OMX_COLOR_FormatAndroidOpaque, &pInputInfo->YPhyAddr);
-            pInputInfo->CPhyAddr = pInputInfo->YPhyAddr +
-                (pSECPort->portDefinition.format.video.nFrameWidth *
-                pSECPort->portDefinition.format.video.nFrameHeight);
-#else
             pInputInfo->YPhyAddr = addrInfo.pAddrY;
             pInputInfo->CPhyAddr = addrInfo.pAddrC;
-#endif
             break;
         }
+        case OMX_SEC_COLOR_FormatNV12LVirtualAddress:
+            addrInfo.pAddrY = *((void **)pInputData->dataBuffer);
+            addrInfo.pAddrC = (void *)((char *)addrInfo.pAddrY + pInputInfo->YSize);
+
+            pInputInfo->YPhyAddr = addrInfo.pAddrY;
+            pInputInfo->CPhyAddr = addrInfo.pAddrC;
+            break;
+        default:
+            pInputInfo->YPhyAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YPhyAddr;
+            pInputInfo->CPhyAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CPhyAddr;
+            pInputInfo->YVirAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YVirAddr;
+            pInputInfo->CVirAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CVirAddr;
+            break;
         }
     }
 
@@ -1422,16 +1444,9 @@ OMX_ERRORTYPE SEC_MFC_Mpeg4_Encode_Block(OMX_COMPONENTTYPE *pOMXComponent, SEC_O
 
     pSECPort = &pSECComponent->pSECPort[INPUT_PORT_INDEX];
     switch (pSECPort->portDefinition.format.video.eColorFormat) {
-    case OMX_SEC_COLOR_FormatNV12LVirtualAddress:
-        addrInfo.pAddrY = *((void **)pInputData->dataBuffer);
-        addrInfo.pAddrC = (void *)((char *)addrInfo.pAddrY + pInputInfo->YSize);
-
-        pInputInfo->YPhyAddr = addrInfo.pAddrY;
-        pInputInfo->CPhyAddr = addrInfo.pAddrC;
-        break;
     case OMX_SEC_COLOR_FormatNV12TPhysicalAddress:
     case OMX_SEC_COLOR_FormatNV12LPhysicalAddress:
-    default: {
+    case OMX_SEC_COLOR_FormatNV21LPhysicalAddress: {
 #ifndef USE_METADATABUFFERTYPE
         /* USE_FIMC_FRAME_BUFFER */
         SEC_OSAL_Memcpy(&addrInfo.pAddrY, pInputData->dataBuffer, sizeof(addrInfo.pAddrY));
@@ -1443,21 +1458,23 @@ OMX_ERRORTYPE SEC_MFC_Mpeg4_Encode_Block(OMX_COMPONENTTYPE *pOMXComponent, SEC_O
         SEC_OSAL_Memcpy(&addrInfo.pAddrY, ppBuf[0], sizeof(addrInfo.pAddrY));
         SEC_OSAL_Memcpy(&addrInfo.pAddrC, ppBuf[1], sizeof(addrInfo.pAddrC));
 #endif
-
-#ifdef USES_CAMERA_API_2
-        SEC_OSAL_LockANBHandle((OMX_U32)ppBuf[0],
-            pSECPort->portDefinition.format.video.nFrameWidth,
-            pSECPort->portDefinition.format.video.nFrameHeight,
-            OMX_COLOR_FormatAndroidOpaque, &pInputInfo->YPhyAddr);
-        pInputInfo->CPhyAddr = pInputInfo->YPhyAddr +
-            (pSECPort->portDefinition.format.video.nFrameWidth *
-            pSECPort->portDefinition.format.video.nFrameHeight);
-#else
         pInputInfo->YPhyAddr = addrInfo.pAddrY;
         pInputInfo->CPhyAddr = addrInfo.pAddrC;
-#endif
         break;
     }
+    case OMX_SEC_COLOR_FormatNV12LVirtualAddress:
+        addrInfo.pAddrY = *((void **)pInputData->dataBuffer);
+        addrInfo.pAddrC = (void *)((char *)addrInfo.pAddrY + pInputInfo->YSize);
+
+        pInputInfo->YPhyAddr = addrInfo.pAddrY;
+        pInputInfo->CPhyAddr = addrInfo.pAddrC;
+        break;
+    default:
+        pInputInfo->YPhyAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YPhyAddr;
+        pInputInfo->CPhyAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CPhyAddr;
+        pInputInfo->YVirAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YVirAddr;
+        pInputInfo->CVirAddr = pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CVirAddr;
+        break;
     }
 
     returnCodec = SsbSipMfcEncSetInBuf(hMFCHandle, pInputInfo);

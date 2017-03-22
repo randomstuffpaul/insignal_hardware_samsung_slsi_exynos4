@@ -41,6 +41,24 @@ OMX_PTR SEC_OSAL_Strcat(OMX_PTR dest, OMX_PTR src);
 size_t SEC_OSAL_Strlen(const char *str);
 ssize_t getline(char **ppLine, size_t *len, FILE *stream);
 
+/* perf */
+typedef enum _PERF_ID_TYPE {
+    PERF_ID_CSC = 0,
+    PERF_ID_DEC,
+    PERF_ID_ENC,
+    PERF_ID_USER,
+    PERF_ID_MAX,
+} PERF_ID_TYPE;
+
+void SEC_OSAL_PerfInit(PERF_ID_TYPE id);
+void SEC_OSAL_PerfStart(PERF_ID_TYPE id);
+void SEC_OSAL_PerfStop(PERF_ID_TYPE id);
+OMX_U32 SEC_OSAL_PerfFrame(PERF_ID_TYPE id);
+OMX_U32 SEC_OSAL_PerfTotal(PERF_ID_TYPE id);
+OMX_U32 SEC_OSAL_PerfFrameCount(PERF_ID_TYPE id);
+int SEC_OSAL_PerfOver30ms(PERF_ID_TYPE id);
+void SEC_OSAL_PerfPrint(OMX_STRING prefix, PERF_ID_TYPE id);
+
 #ifdef __cplusplus
 }
 #endif

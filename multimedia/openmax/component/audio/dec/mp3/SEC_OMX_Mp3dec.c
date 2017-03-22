@@ -520,6 +520,13 @@ OMX_ERRORTYPE SEC_SRP_Mp3_Decode_Block(OMX_COMPONENTTYPE *pOMXComponent, SEC_OMX
     }
 
     if (pMp3Dec->hSRPMp3Handle.bConfiguredSRP == OMX_FALSE) {
+        if ((pInputData->dataLen <= 0) && (pInputData->nFlags & OMX_BUFFERFLAG_EOS)) {
+            pOutputData->nFlags |= OMX_BUFFERFLAG_EOS;
+            pMp3Dec->hSRPMp3Handle.bSRPSendEOS = OMX_FALSE;
+            ret = OMX_ErrorNone;
+            goto EXIT;
+        }
+
         returnCodec = SRP_Get_Dec_Info(&codecDecInfo);
         if (returnCodec < 0) {
             SEC_OSAL_Log(SEC_LOG_ERROR, "SRP_Get_Dec_Info failed: %d", returnCodec);

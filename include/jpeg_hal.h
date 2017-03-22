@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-#include <linux/videodev2.h>
+#include "videodev2.h"
 
 #define JPEG_DEC_NODE        "/dev/video11"
-#define JPEG_ENC_NODE        "/dev/video13"
+#define JPEG_ENC_NODE        "/dev/video12"
 
 #define JPEG_MAX_PLANE_CNT          3
 #define JPEG_DEC_OUT_BYTE_ALIGN     8
@@ -72,7 +72,6 @@ struct jpeg_buf {
     int     length[JPEG_MAX_PLANE_CNT];
     enum    v4l2_memory    memory;
     enum    v4l2_buf_type  buf_type;    // Caller need not set this
-    int     map_length[JPEG_MAX_PLANE_CNT];
 };
 
 struct jpeg_buf_info {

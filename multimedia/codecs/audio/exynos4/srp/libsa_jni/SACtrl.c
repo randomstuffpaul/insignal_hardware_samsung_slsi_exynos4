@@ -15,17 +15,17 @@ void Java_com_android_music_SetSACtrlJNI_set(JNIEnv * env, jobject obj, int effe
     unsigned long effect_enable = effect_num ? 1 : 0;
     unsigned int ret;
 
-    ALOGD("Sound effect[%d]", effect_num);
+    LOGD("Sound effect[%d]", effect_num);
 
     ret = SRP_Ctrl_Enable_Effect(effect_enable);
     if (ret < 0) {
-        ALOGE("%s: Couldn't enabled effect\n", __func__);
+        LOGE("%s: Couldn't enabled effect\n", __func__);
         return;
     }
 
     SRP_Ctrl_Set_Effect_Def(effect_num << 5);
     if (ret < 0) {
-        ALOGE("%s: Couldn't defined effect\n", __func__);
+        LOGE("%s: Couldn't defined effect\n", __func__);
         return;
     }
 

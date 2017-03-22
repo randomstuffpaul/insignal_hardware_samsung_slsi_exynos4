@@ -21,16 +21,16 @@ ifeq ($(BOARD_USE_METADATABUFFERTYPE), true)
 LOCAL_CFLAGS += -DUSE_METADATABUFFERTYPE
 endif
 
-ifeq ($(BOARD_USES_CAMERA_API_2), true)
-LOCAL_CFLAGS += -DUSES_CAMERA_API_2
-endif
+#ifeq ($(BOARD_USE_H264_PREPEND_SPS_PPS), true)
+#LOCAL_CFLAGS += -DUSE_H264_PREPEND_SPS_PPS
+#endif
 
 LOCAL_ARM_MODE := arm
 
 LOCAL_STATIC_LIBRARIES := libSEC_OMX_Venc libsecosal libsecbasecomponent \
-	libseccscapi libsecmfcapi
+	libswconverter libsecmfcapi
 LOCAL_SHARED_LIBRARIES := libc libdl libcutils libutils libui \
-	libSEC_OMX_Resourcemanager
+	libSEC_OMX_Resourcemanager libcsc
 
 LOCAL_C_INCLUDES := $(SEC_OMX_INC)/khronos \
 	$(SEC_OMX_INC)/sec \

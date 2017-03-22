@@ -78,11 +78,6 @@ typedef struct _SEC_WMV_HANDLE
 
     /* SEC MFC Codec specific */
     SEC_MFC_WMV_HANDLE      hMFCWmvHandle;
-
-    /* CSC FIMC handle */
-#ifdef USE_CSC_FIMC
-    OMX_PTR hFIMCHandle;
-#endif
 } SEC_WMV_HANDLE;
 
 #ifdef __cplusplus

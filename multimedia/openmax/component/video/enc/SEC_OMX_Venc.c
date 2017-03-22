@@ -36,7 +36,7 @@
 #include "SEC_OSAL_Mutex.h"
 #include "SEC_OSAL_Semaphore.h"
 #include "SEC_OSAL_ETC.h"
-#include "color_space_convertor.h"
+#include "csc.h"
 
 #ifdef USE_STOREMETADATA
 #include "SEC_OSAL_Android.h"
@@ -708,6 +708,9 @@ OMX_BOOL SEC_Preprocessor_InputData(OMX_COMPONENTTYPE *pOMXComponent)
             case OMX_COLOR_FormatYUV420Planar:
             case OMX_SEC_COLOR_FormatNV12TPhysicalAddress:
             case OMX_SEC_COLOR_FormatNV12LPhysicalAddress:
+            case OMX_SEC_COLOR_FormatNV21LPhysicalAddress:
+            case OMX_SEC_COLOR_FormatNV12Tiled:
+            case OMX_SEC_COLOR_FormatNV21Linear:
                 oneFrameSize = (width * height * 3) / 2;
                 break;
             case OMX_SEC_COLOR_FormatNV12LVirtualAddress:
@@ -755,12 +758,22 @@ OMX_BOOL SEC_Preprocessor_InputData(OMX_COMPONENTTYPE *pOMXComponent)
             SEC_OMX_BASEPORT *pSECPort = &pSECComponent->pSECPort[INPUT_PORT_INDEX];
             if ((pSECPort->portDefinition.format.video.eColorFormat != OMX_SEC_COLOR_FormatNV12TPhysicalAddress) &&
                 (pSECPort->portDefinition.format.video.eColorFormat != OMX_SEC_COLOR_FormatNV12LPhysicalAddress) &&
-                (pSECPort->portDefinition.format.video.eColorFormat != OMX_SEC_COLOR_FormatNV12LVirtualAddress)) {
+                (pSECPort->portDefinition.format.video.eColorFormat != OMX_SEC_COLOR_FormatNV12LVirtualAddress) &&
+                (pSECPort->portDefinition.format.video.eColorFormat != OMX_SEC_COLOR_FormatNV21LPhysicalAddress)) {
                 if (flagEOF == OMX_TRUE) {
                     OMX_U32 width, height;
+                    unsigned int csc_src_color_format = omx_2_hal_pixel_format((unsigned int)OMX_COLOR_FormatYUV420SemiPlanar);
+                    unsigned int csc_dst_color_format = omx_2_hal_pixel_format((unsigned int)OMX_COLOR_FormatYUV420SemiPlanar);
+                    unsigned int cacheable = 1;
+                    unsigned char *pSrcBuf[3] = {NULL, };
+                    unsigned char *pDstBuf[3] = {NULL, };
+                    OMX_PTR ppBuf[3];
 
                     width = pSECPort->portDefinition.format.video.nFrameWidth;
                     height = pSECPort->portDefinition.format.video.nFrameHeight;
+
+                    pDstBuf[0] = (unsigned char *)pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YVirAddr;
+                    pDstBuf[1] = (unsigned char *)pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CVirAddr;
 
                     SEC_OSAL_Log(SEC_LOG_TRACE, "pVideoEnc->MFCEncInputBuffer[%d].YVirAddr : 0x%x", pVideoEnc->indexInputBuffer, pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YVirAddr);
                     SEC_OSAL_Log(SEC_LOG_TRACE, "pVideoEnc->MFCEncInputBuffer[%d].CVirAddr : 0x%x", pVideoEnc->indexInputBuffer, pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CVirAddr);
@@ -769,28 +782,21 @@ OMX_BOOL SEC_Preprocessor_InputData(OMX_COMPONENTTYPE *pOMXComponent)
                     SEC_OSAL_Log(SEC_LOG_TRACE, "width:%d, height:%d, Csize:%d", width, height, ALIGN_TO_8KB(ALIGN_TO_128B(width) * ALIGN_TO_32B(height / 2)));
 
                     if (pSECPort->bStoreMetaData == OMX_FALSE) {
+                        pSrcBuf[0]  = checkInputStream;
+                        pSrcBuf[1]  = checkInputStream + (width * height);
+                        pSrcBuf[2]  = checkInputStream + (((width * height) * 5) / 4);
+
                         switch (pSECPort->portDefinition.format.video.eColorFormat) {
                         case OMX_COLOR_FormatYUV420Planar:
                             /* YUV420Planar case it needed changed interleave UV plane (MFC spec.)*/
-                            SEC_OSAL_Memcpy(pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YVirAddr,
-                                            checkInputStream, (width * height));
-                            csc_interleave_memcpy_neon(pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CVirAddr,
-                                                     checkInputStream + (width * height),
-                                                     checkInputStream + (((width * height) * 5) / 4),
-                                                     width * height >> 2);
+                            csc_src_color_format = omx_2_hal_pixel_format((unsigned int)OMX_COLOR_FormatYUV420Planar);
+                            csc_dst_color_format = omx_2_hal_pixel_format((unsigned int)OMX_COLOR_FormatYUV420SemiPlanar);
                             break;
                         case OMX_COLOR_FormatYUV420SemiPlanar:
-                            SEC_OSAL_Memcpy(pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YVirAddr,
-                                            checkInputStream, (width * height));
-                            SEC_OSAL_Memcpy(pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CVirAddr,
-                                            checkInputStream + (width * height), (width * height / 2));
-                            break;
                         case OMX_SEC_COLOR_FormatNV12Tiled:
-                            SEC_OSAL_Memcpy(pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YVirAddr,
-                                            checkInputStream, ALIGN_TO_8KB(ALIGN_TO_128B(width) * ALIGN_TO_32B(height)));
-                            SEC_OSAL_Memcpy(pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CVirAddr,
-                                            checkInputStream + ALIGN_TO_8KB(ALIGN_TO_128B(width) * ALIGN_TO_32B(height)),
-                                            ALIGN_TO_8KB(ALIGN_TO_128B(width) * ALIGN_TO_32B(height / 2)));
+                        case OMX_SEC_COLOR_FormatNV21Linear:
+                            csc_src_color_format = omx_2_hal_pixel_format((unsigned int)OMX_COLOR_FormatYUV420SemiPlanar);
+                            csc_dst_color_format = omx_2_hal_pixel_format((unsigned int)OMX_COLOR_FormatYUV420SemiPlanar);
                             break;
                         default:
                             break;
@@ -798,21 +804,57 @@ OMX_BOOL SEC_Preprocessor_InputData(OMX_COMPONENTTYPE *pOMXComponent)
                     }
 #ifdef USE_METADATABUFFERTYPE
                     else {
-#ifndef USES_CAMERA_API_2
                         if (pSECPort->portDefinition.format.video.eColorFormat == OMX_COLOR_FormatAndroidOpaque) {
-                            OMX_PTR ppBuf[3];
-                            OMX_PTR pOutBuffer;
+                                OMX_PTR pOutBuffer;
+                                csc_src_color_format = omx_2_hal_pixel_format((unsigned int)OMX_COLOR_Format32bitARGB8888);
+                                csc_dst_color_format = omx_2_hal_pixel_format((unsigned int)OMX_COLOR_FormatYUV420SemiPlanar);
 
-                            SEC_OSAL_GetInfoFromMetaData(inputData, ppBuf);
-                            SEC_OSAL_LockANBHandle((OMX_U32)ppBuf[0], width, height, OMX_COLOR_FormatAndroidOpaque, &pOutBuffer);
-
-                            csc_ARGB8888_to_YUV420SP(pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].YVirAddr,
-                                                    pVideoEnc->MFCEncInputBuffer[pVideoEnc->indexInputBuffer].CVirAddr,
-                                                    pOutBuffer, width, height);
-
-                            SEC_OSAL_UnlockANBHandle((OMX_U32)ppBuf[0]);
+                                SEC_OSAL_GetInfoFromMetaData(inputData, ppBuf);
+                                SEC_OSAL_LockANBHandle((OMX_U32)ppBuf[0], width, height, OMX_COLOR_FormatAndroidOpaque, &pOutBuffer);
+                                pSrcBuf[0]  = (unsigned char *)pOutBuffer;
+                                pSrcBuf[1]  = NULL;
+                                pSrcBuf[2]  = NULL;
                         }
+                    }
 #endif
+
+                    csc_set_src_format(
+                        pVideoEnc->csc_handle,  /* handle */
+                        width,                  /* width */
+                        height,                 /* height */
+                        0,                      /* crop_left */
+                        0,                      /* crop_right */
+                        width,                  /* crop_width */
+                        height,                 /* crop_height */
+                        csc_src_color_format,   /* color_format */
+                        cacheable);             /* cacheable */
+                    csc_set_dst_format(
+                        pVideoEnc->csc_handle,  /* handle */
+                        width,                  /* width */
+                        height,                 /* height */
+                        0,                      /* crop_left */
+                        0,                      /* crop_right */
+                        width,                  /* crop_width */
+                        height,                 /* crop_height */
+                        csc_dst_color_format,   /* color_format */
+                        cacheable);             /* cacheable */
+                    csc_set_src_buffer(
+                        pVideoEnc->csc_handle,  /* handle */
+                        pSrcBuf[0],             /* y addr */
+                        pSrcBuf[1],             /* u addr or uv addr */
+                        pSrcBuf[2],             /* v addr or none */
+                        0);                     /* ion fd */
+                    csc_set_dst_buffer(
+                        pVideoEnc->csc_handle,  /* handle */
+                        pDstBuf[0],             /* y addr */
+                        pDstBuf[1],             /* u addr or uv addr */
+                        pDstBuf[2],             /* v addr or none */
+                        0);                     /* ion fd */
+                    csc_convert(pVideoEnc->csc_handle);
+
+#ifdef USE_METADATABUFFERTYPE
+                    if (pSECPort->bStoreMetaData == OMX_TRUE) {
+                        SEC_OSAL_UnlockANBHandle((OMX_U32)ppBuf[0]);
                     }
 #endif
                 }
@@ -1149,8 +1191,19 @@ OMX_ERRORTYPE SEC_OMX_VideoEncodeGetParameter(
                 break;
             case supportFormat_6:
                 portFormat->eCompressionFormat = OMX_VIDEO_CodingUnused;
+                portFormat->eColorFormat       = OMX_SEC_COLOR_FormatNV21LPhysicalAddress;
+                portFormat->xFramerate         = portDefinition->format.video.xFramerate;
+                break;
+            case supportFormat_7:
+                portFormat->eCompressionFormat = OMX_VIDEO_CodingUnused;
+                portFormat->eColorFormat       = OMX_SEC_COLOR_FormatNV21Linear;
+                portFormat->xFramerate         = portDefinition->format.video.xFramerate;
+                break;
+            case supportFormat_8:
+                portFormat->eCompressionFormat = OMX_VIDEO_CodingUnused;
                 portFormat->eColorFormat       = OMX_COLOR_FormatAndroidOpaque;
                 portFormat->xFramerate         = portDefinition->format.video.xFramerate;
+                break;
             }
         } else if (portIndex == OUTPUT_PORT_INDEX) {
             supportFormatNum = OUTPUT_PORT_SUPPORTFORMAT_NUM_MAX - 1;
@@ -1242,6 +1295,32 @@ OMX_ERRORTYPE SEC_OMX_VideoEncodeGetParameter(
 #endif
     }
         break;
+#ifdef USE_H264_PREPEND_SPS_PPS		
+    case OMX_IndexParamVideoIntraRefresh:
+    {
+        OMX_VIDEO_PARAM_INTRAREFRESHTYPE    *pIntraRefresh  = (OMX_VIDEO_PARAM_INTRAREFRESHTYPE *)ComponentParameterStructure;
+        OMX_U32                              nPortIndex     = pIntraRefresh->nPortIndex;
+        SEC_OMX_VIDEOENC_COMPONENT       *pVideoEnc      = NULL;
+
+        ret = SEC_OMX_Check_SizeVersion(pIntraRefresh, sizeof(OMX_VIDEO_PARAM_INTRAREFRESHTYPE));
+        if (ret != OMX_ErrorNone)
+            goto EXIT;
+
+        if (nPortIndex != OUTPUT_PORT_INDEX) {
+            ret = OMX_ErrorBadPortIndex;
+            goto EXIT;
+        }
+
+        pVideoEnc = (SEC_OMX_VIDEOENC_COMPONENT *)pSECComponent->hComponentHandle;
+        pIntraRefresh->eRefreshMode = pVideoEnc->intraRefresh.eRefreshMode;
+        pIntraRefresh->nAirMBs      = pVideoEnc->intraRefresh.nAirMBs;
+        pIntraRefresh->nAirRef      = pVideoEnc->intraRefresh.nAirRef;
+        pIntraRefresh->nCirMBs      = pVideoEnc->intraRefresh.nCirMBs;
+
+        ret = OMX_ErrorNone;
+    }
+        break;
+#endif		
     default:
     {
         ret = SEC_OMX_GetParameter(hComponent, nParamIndex, ComponentParameterStructure);
@@ -1411,6 +1490,37 @@ OMX_ERRORTYPE SEC_OMX_VideoEncodeSetParameter(
     }
         break;
 #endif
+#ifdef USE_H264_PREPEND_SPS_PPS
+    case OMX_IndexParamVideoIntraRefresh:
+    {
+        OMX_VIDEO_PARAM_INTRAREFRESHTYPE    *pIntraRefresh  = (OMX_VIDEO_PARAM_INTRAREFRESHTYPE *)ComponentParameterStructure;
+        OMX_U32                              nPortIndex     = pIntraRefresh->nPortIndex;
+        SEC_OMX_VIDEOENC_COMPONENT       *pVideoEnc      = NULL;
+
+        ret = SEC_OMX_Check_SizeVersion(pIntraRefresh, sizeof(OMX_VIDEO_PARAM_INTRAREFRESHTYPE));
+        if (ret != OMX_ErrorNone)
+            goto EXIT;
+
+        if (nPortIndex != OUTPUT_PORT_INDEX) {
+            ret = OMX_ErrorBadPortIndex;
+            goto EXIT;
+        }
+
+        pVideoEnc = (SEC_OMX_VIDEOENC_COMPONENT *)pSECComponent->hComponentHandle;
+        if (pIntraRefresh->eRefreshMode == OMX_VIDEO_IntraRefreshCyclic) {
+            pVideoEnc->intraRefresh.eRefreshMode    = pIntraRefresh->eRefreshMode;
+            pVideoEnc->intraRefresh.nCirMBs         = pIntraRefresh->nCirMBs;
+            SEC_OSAL_Log(SEC_LOG_TRACE, "OMX_VIDEO_IntraRefreshCyclic Enable, nCirMBs: %d",
+                            pVideoEnc->intraRefresh.nCirMBs);
+        } else {
+            ret = OMX_ErrorUnsupportedSetting;
+            goto EXIT;
+        }
+
+        ret = OMX_ErrorNone;
+    }
+        break;
+#endif		
     default:
     {
         ret = SEC_OMX_SetParameter(hComponent, nIndex, ComponentParameterStructure);
